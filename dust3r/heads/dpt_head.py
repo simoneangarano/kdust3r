@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 from dust3r.heads.postprocess import postprocess
 import dust3r.utils.path_to_croco  # noqa: F401
-from models.dpt_block import DPTOutputAdapter  # noqa
+from croco.models.dpt_block import DPTOutputAdapter  # noqa
 
 
 class DPTOutputAdapter_fix(DPTOutputAdapter):
@@ -102,7 +102,10 @@ def create_dpt_head(net, has_conf=False):
     feature_dim = 256
     last_dim = feature_dim//2
     out_nchan = 3
-    ed = net.enc_embed_dim
+    if net.adapter and not net.old:
+        ed = 1024
+    else:    
+        ed = net.enc_embed_dim
     dd = net.dec_embed_dim
     return PixelwiseTaskWithDPT(num_channels=out_nchan + has_conf,
                                 feature_dim=feature_dim,

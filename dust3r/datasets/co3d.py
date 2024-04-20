@@ -13,17 +13,19 @@ from collections import deque
 
 import cv2
 import numpy as np
+import torch
 
 from dust3r.datasets.base.base_stereo_view_dataset import BaseStereoViewDataset
 from dust3r.utils.image import imread_cv2
 
 
 class Co3d(BaseStereoViewDataset):
-    def __init__(self, mask_bg=True, *args, ROOT, **kwargs):
+    def __init__(self, mask_bg=True, features=False, *args, ROOT, **kwargs):
         self.ROOT = ROOT
         super().__init__(*args, **kwargs)
         assert mask_bg in (True, False, 'rand')
         self.mask_bg = mask_bg
+        self.features = features
 
         # load all scenes
         with open(osp.join(self.ROOT, f'selected_seqs_{self.split}.json'), 'r') as f:
@@ -57,7 +59,7 @@ class Co3d(BaseStereoViewDataset):
             self.invalidate[obj, instance][resolution] = [False for _ in range(len(image_pool))]
 
         # decide now if we mask the bg
-        mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2))
+        mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2)) # 50% chance
 
         views = []
         imgs_idxs = [max(0, min(im_idx + rng.integers(-4, 5), last)) for im_idx in [im2_idx, im1_idx]]
@@ -65,15 +67,18 @@ class Co3d(BaseStereoViewDataset):
         while len(imgs_idxs) > 0:  # some images (few) have zero depth
             im_idx = imgs_idxs.pop()
 
-            if self.invalidate[obj, instance][resolution][im_idx]:
-                # search for a valid image
-                random_direction = 2 * rng.choice(2) - 1
-                for offset in range(1, len(image_pool)):
-                    tentative_im_idx = (im_idx + (random_direction * offset)) % len(image_pool)
-                    if not self.invalidate[obj, instance][resolution][tentative_im_idx]:
-                        im_idx = tentative_im_idx
-                        break
-
+            try:
+                if self.invalidate[obj, instance][resolution][im_idx]:
+                    # search for a valid image
+                    random_direction = 2 * rng.choice(2) - 1
+                    for offset in range(1, len(image_pool)):
+                        tentative_im_idx = (im_idx + (random_direction * offset)) % len(image_pool)
+                        if not self.invalidate[obj, instance][resolution][tentative_im_idx]:
+                            im_idx = tentative_im_idx
+                            break
+            except:
+                print(obj, instance, resolution, im_idx)
+                raise ValueError
             view_idx = image_pool[im_idx]
 
             impath = osp.join(self.ROOT, obj, instance, 'images', f'frame{view_idx:06n}.jpg')
@@ -101,11 +106,19 @@ class Co3d(BaseStereoViewDataset):
                 rgb_image, depthmap, intrinsics, resolution, rng=rng, info=impath)
 
             num_valid = (depthmap > 0.0).sum()
-            if num_valid == 0:
-                # problem, invalidate image and retry
-                self.invalidate[obj, instance][resolution][im_idx] = True
-                imgs_idxs.append(im_idx)
-                continue
+            # if num_valid == 0:
+            #     # problem, invalidate image and retry
+            #     # print(f"Invalid image {impath} for {obj} {instance} {resolution} {im_idx}")
+            #     self.invalidate[obj, instance][resolution][im_idx] = True
+            #     imgs_idxs.append(im_idx)
+            #     continue
+
+            # load features
+            if self.features:
+                features = np.load(impath.replace('jpg', 'npy'))
+                points = 0
+            else:
+                features, points = 0, 0
 
             views.append(dict(
                 img=rgb_image,
@@ -115,6 +128,9 @@ class Co3d(BaseStereoViewDataset):
                 dataset='Co3d_v2',
                 label=osp.join(obj, instance),
                 instance=osp.split(impath)[1],
+                img_path=impath,
+                points=points,
+                features=features
             ))
         return views
 

@@ -6,11 +6,9 @@ import os
 import sys
 import time
 import math
-import random
 from collections import defaultdict
 from pathlib import Path
 from typing import Sized
-from copy import deepcopy
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -20,50 +18,42 @@ torch.backends.cuda.matmul.allow_tf32 = True  # for gpu >= Ampere and pytorch >=
 from dust3r.model import AsymmetricCroCo3DStereo, inf  # noqa: F401, needed when loading the model
 from dust3r.datasets import get_data_loader  # noqa
 from dust3r.losses import *  # noqa: F401, needed when loading the model
-from dust3r.inference import loss_of_one_batch, load_model
+from dust3r.inference import loss_of_one_batch  # noqa
 
 import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa
 from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler  # noqa
 
-TRAIN_DATA = "Co3d(split='train', ROOT='/ssd1/wenyan/co3d_2_cat_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter)"
-TEST_DATA =  "100 @ Co3d(split='test', ROOT='/ssd1/wenyan/co3d_2_cat_processed', resolution=224, seed=777)" # ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed'
-MODEL = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
-         output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
-         enc_embed_dim=1024, enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12)"
-MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
-            output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
-            enc_embed_dim=384, enc_depth=12, enc_num_heads=6, dec_embed_dim=768, dec_depth=12, dec_num_heads=12, adapter=True)"
-CKPT = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
-CKPT_KD = None # "checkpoints/DUSt3R_ViTSmall_BaseDecoder_512_dpt_kd.pth"
-
-TRAIN_CRITERION = "ConfLoss(Regr3D(L21, norm_mode='avg_dis'), alpha=0.2)"
-TEST_CRITERION = "Regr3D_ScaleShiftInv(L21, gt_scale=True)"
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DUST3R training', add_help=False)
     # model and criterion
-    parser.add_argument('--model', default=MODEL_KD,
+    parser.add_argument('--model', default="AsymmetricCroCo3DStereo(patch_embed_cls='ManyAR_PatchEmbed')",
                         type=str, help="string containing the model to build")
-    parser.add_argument('--pretrained', default=None, help='path of a starting checkpoint') # CKPT_KD
-    parser.add_argument('--train_criterion', default=TRAIN_CRITERION,
+    parser.add_argument('--pretrained', default=None, help='path of a starting checkpoint')
+    parser.add_argument('--train_criterion', default="ConfLoss(Regr3D(L21, norm_mode='avg_dis'), alpha=0.2)",
                         type=str, help="train criterion")
-    parser.add_argument('--test_criterion', default=TEST_CRITERION, type=str, help="test criterion")
+    parser.add_argument('--test_criterion', default=None, type=str, help="test criterion")
 
     # dataset
-    parser.add_argument('--train_dataset', default=TRAIN_DATA, type=str, help="training set")
-    parser.add_argument('--test_dataset', default=TEST_DATA, type=str, help="testing set")
+    parser.add_argument('--train_dataset', required=True, type=str, help="training set")
+    parser.add_argument('--test_dataset', default='[None]', type=str, help="testing set")
 
     # training
-    parser.add_argument('--seed', default=777, type=int, help="Random seed")
-    parser.add_argument('--epochs', default=10, type=int, help="Maximum number of epochs for the scheduler")
+    parser.add_argument('--seed', default=0, type=int, help="Random seed")
+    parser.add_argument('--batch_size', default=64, type=int,
+                        help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
+    parser.add_argument('--accum_iter', default=1, type=int,
+                        help="Accumulate gradient iterations (for increasing the effective batch size under memory constraints)")
+    parser.add_argument('--epochs', default=800, type=int, help="Maximum number of epochs for the scheduler")
 
-    parser.add_argument('--weight_decay', type=float, default=0.00005, help="weight decay (default: 0.05)")
-    parser.add_argument('--lr', type=float, default=0.0001, metavar='LR', help='learning rate (absolute lr)')
-    parser.add_argument('--blr', type=float, default=0.00015, metavar='LR',
+    parser.add_argument('--weight_decay', type=float, default=0.05, help="weight decay (default: 0.05)")
+    parser.add_argument('--lr', type=float, default=None, metavar='LR', help='learning rate (absolute lr)')
+    parser.add_argument('--blr', type=float, default=1.5e-4, metavar='LR',
                         help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
-    parser.add_argument('--min_lr', type=float, default=1e-6, metavar='LR',
+    parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
+    parser.add_argument('--warmup_epochs', type=int, default=40, metavar='N', help='epochs to warmup LR')
 
     parser.add_argument('--amp', type=int, default=0,
                         choices=[0, 1], help="Use Automatic Mixed Precision for pretraining")
@@ -71,38 +61,26 @@ def get_args_parser():
     # others
     parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--world_size', default=1, type=int, help='number of distributed processes')
-    parser.add_argument('--local_rank', default=0, type=int)
+    parser.add_argument('--local_rank', default=-1, type=int)
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
 
     parser.add_argument('--eval_freq', type=int, default=1, help='Test loss evaluation frequency')
     parser.add_argument('--save_freq', default=1, type=int,
                         help='frequence (number of epochs) to save checkpoint in checkpoint-last.pth')
-    parser.add_argument('--keep_freq', default=1, type=int,
+    parser.add_argument('--keep_freq', default=20, type=int,
                         help='frequence (number of epochs) to save checkpoint in checkpoint-%d.pth')
-    parser.add_argument('--print_freq', default=100, type=int,
+    parser.add_argument('--print_freq', default=20, type=int,
                         help='frequence (number of iterations) to print infos while training')
-    
-    # test
-    parser.add_argument('--test', default=False, action='store_true', help="test only flag")
-    parser.add_argument('--kd', default=True, action='store_true', help="knowledge distillation flag")
-    parser.add_argument('--teacher_path', default=CKPT, type=str, help="path to the teacher model")
 
-    parser.add_argument('--warmup_epochs', type=int, default=0, metavar='N', help='epochs to warmup LR')
-
-
-    parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='./log/train/', type=str, help="path where to save the output")
-    parser.add_argument('--cuda', default=0, type=int, help="cuda device")
-    parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint") # 'log/train_10_1%/checkpoint-1.pth'
-    parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
-    parser.add_argument('--accum_iter', default=1, type=int, help="Accumulate gradient iterations")
-
+    # output dir
+    parser.add_argument('--output_dir', default='./output/', type=str, help="path where to save the output")
     return parser
 
 
 def main(args):
     misc.init_distributed_mode(args)
-    # global_rank = misc.get_rank()
+    global_rank = misc.get_rank()
+    world_size = misc.get_world_size()
 
     print("output_dir: "+args.output_dir)
     if args.output_dir:
@@ -110,21 +88,20 @@ def main(args):
 
     # auto resume
     last_ckpt_fname = os.path.join(args.output_dir, f'checkpoint-last.pth')
-    args.resume = None # last_ckpt_fname if os.path.isfile(last_ckpt_fname) else None
+    args.resume = last_ckpt_fname if os.path.isfile(last_ckpt_fname) else None
 
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(', ', ',\n'))
 
-    device = f"cuda:{args.cuda}" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
 
     # fix the seed
-    # seed = args.seed
-    # torch.manual_seed(seed)
-    # np.random.seed(seed)
-    # random.seed(seed)
-    # cudnn.benchmark = False
-    # cudnn.deterministic = True
+    seed = args.seed + misc.get_rank()
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    cudnn.benchmark = True
 
     # training dataset and loader
     print('Building train dataset {:s}'.format(args.train_dataset))
@@ -134,29 +111,22 @@ def main(args):
     data_loader_test = {dataset.split('(')[0]: build_dataset(dataset, args.batch_size, args.num_workers, test=True)
                         for dataset in args.test_dataset.split('+')}
 
-    # model and criterion
-    if not args.test:
-        teacher, model = build_model_enc_dec(args.model, device, args)
-    else:
-        teacher, model = load_pretrained(args.model, args.teacher_path, args.ckpt, device)
-
-    # print('Loading model: {:s}'.format(args.model))
-    # model = eval(args.model)
+    # model
+    print('Loading model: {:s}'.format(args.model))
+    model = eval(args.model)
     print(f'>> Creating train criterion = {args.train_criterion}')
     train_criterion = eval(args.train_criterion).to(device)
     print(f'>> Creating test criterion = {args.test_criterion or args.train_criterion}')
     test_criterion = eval(args.test_criterion or args.criterion).to(device)
 
     model.to(device)
-    # print("Model = %s" % str(model_without_ddp))
+    model_without_ddp = model
+    print("Model = %s" % str(model_without_ddp))
 
     if args.pretrained and not args.resume:
         print('Loading pretrained: ', args.pretrained)
         ckpt = torch.load(args.pretrained, map_location=device)
-        if not args.kd:
-            print(model.load_state_dict(ckpt['model'], strict=False))
-        else:
-            print(model.load_state_dict(ckpt, strict=False))
+        print(model.load_state_dict(ckpt['model'], strict=False))
         del ckpt  # in case it occupies memory
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
@@ -170,16 +140,12 @@ def main(args):
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(
             model, device_ids=[args.gpu], find_unused_parameters=True, static_graph=True)
+        model_without_ddp = model.module
 
     # following timm: set wd as 0 for bias and norm layers
-    # param_groups = misc.get_parameter_groups(model_without_ddp, args.weight_decay)
-    train_modules = [model.patch_embed, model.mask_generator, model.rope, model.enc_blocks, model.enc_norm]
-    if hasattr(model, 'adapter') and model.adapter is not None:
-        train_modules.append(model.adapter)
-    train_params = torch.nn.ParameterList([p for m in train_modules for p in m.parameters()])
-    # train_params.append(model.mask_token)
-    optimizer = torch.optim.AdamW(train_params, lr=args.lr, weight_decay=args.weight_decay) #, betas=(0.9, 0.95))
-    # print(optimizer)
+    param_groups = misc.get_parameter_groups(model_without_ddp, args.weight_decay)
+    optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
+    print(optimizer)
     loss_scaler = NativeScaler()
 
     def write_log_stats(epoch, train_stats, test_stats):
@@ -187,7 +153,7 @@ def main(args):
             if log_writer is not None:
                 log_writer.flush()
 
-            log_stats = dict(**{f'train_{k}': v for k, v in train_stats.items()})
+            log_stats = dict(epoch=epoch, **{f'train_{k}': v for k, v in train_stats.items()})
             for test_name in data_loader_test:
                 if test_name not in test_stats:
                     continue
@@ -197,19 +163,22 @@ def main(args):
                 f.write(json.dumps(log_stats) + "\n")
 
     def save_model(epoch, fname, best_so_far):
-        misc.save_model(args=args, model=model, optimizer=optimizer,
+        misc.save_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer,
                         loss_scaler=loss_scaler, epoch=epoch, fname=fname, best_so_far=best_so_far)
 
-    best_so_far = misc.load_model(args=args, model=model,
+    best_so_far = misc.load_model(args=args, model_without_ddp=model_without_ddp,
                                   optimizer=optimizer, loss_scaler=loss_scaler)
     if best_so_far is None:
         best_so_far = float('inf')
-    log_writer = SummaryWriter(log_dir=args.output_dir)
+    if global_rank == 0 and args.output_dir is not None:
+        log_writer = SummaryWriter(log_dir=args.output_dir)
+    else:
+        log_writer = None
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
-    train_stats = test_stats = {'train_iter': 0}
-    for epoch in range(args.start_epoch, args.epochs):
+    train_stats = test_stats = {}
+    for epoch in range(args.start_epoch, args.epochs+1):
 
         # Save immediately the last checkpoint
         if epoch > args.start_epoch:
@@ -218,12 +187,11 @@ def main(args):
 
         # Test on multiple datasets
         new_best = False
-        if (epoch > 0 and args.eval_freq > 0 and epoch % args.eval_freq == 0) or args.test:
+        if (epoch > 0 and args.eval_freq > 0 and epoch % args.eval_freq == 0):
             test_stats = {}
             for test_name, testset in data_loader_test.items():
                 stats = test_one_epoch(model, test_criterion, testset,
-                                       device, epoch, log_writer=log_writer, args=args, prefix=test_name,
-                                       kd=args.kd, teacher=teacher, features=args.kd, curr_step=train_stats['train_iter'])
+                                       device, epoch, log_writer=log_writer, args=args, prefix=test_name)
                 test_stats[test_name] = stats
 
                 # Save best of all
@@ -239,29 +207,29 @@ def main(args):
                 save_model(epoch-1, str(epoch), best_so_far)
             if new_best:
                 save_model(epoch-1, 'best', best_so_far)
-        if epoch >= args.epochs or args.test:
+        if epoch >= args.epochs:
             break  # exit after writing last test to disk
 
         # Train
         train_stats = train_one_epoch(
             model, train_criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
-            log_writer=log_writer, kd=args.kd, teacher=teacher, features=args.kd,
-            args=args, train_params=train_params)
+            log_writer=log_writer,
+            args=args)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
-    save_final_model(args, args.epochs, model, best_so_far=best_so_far)
+    save_final_model(args, args.epochs, model_without_ddp, best_so_far=best_so_far)
 
 
-def save_final_model(args, epoch, model, best_so_far=None):
+def save_final_model(args, epoch, model_without_ddp, best_so_far=None):
     output_dir = Path(args.output_dir)
     checkpoint_path = output_dir / 'checkpoint-final.pth'
     to_save = {
         'args': args,
-        'model': model if isinstance(model, dict) else model.cpu().state_dict(),
+        'model': model_without_ddp if isinstance(model_without_ddp, dict) else model_without_ddp.cpu().state_dict(),
         'epoch': epoch
     }
     if best_so_far is not None:
@@ -286,13 +254,14 @@ def build_dataset(dataset, batch_size, num_workers, test=False):
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Sized, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, loss_scaler, args, kd=False, teacher=None, features=False,
-                    log_writer=None, train_params=None):
+                    device: torch.device, epoch: int, loss_scaler,
+                    args,
+                    log_writer=None):
     assert torch.backends.cuda.matmul.allow_tf32 == True
 
-    model = set_trainable(model)
-    metric_logger = misc.MetricLogger(delimiter=" ")
-    metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.1e}\n>'))
+    model.train(True)
+    metric_logger = misc.MetricLogger(delimiter="  ")
+    metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
     accum_iter = args.accum_iter
 
@@ -314,8 +283,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             misc.adjust_learning_rate(optimizer, epoch_f, args)
 
         loss_tuple = loss_of_one_batch(batch, model, criterion, device,
-                                       symmetrize_batch=True, features=features,
-                                       use_amp=bool(args.amp), ret='loss', kd=kd, teacher=teacher, lmd=args.lmd)
+                                       symmetrize_batch=True,
+                                       use_amp=bool(args.amp), ret='loss')
         loss, loss_details = loss_tuple  # criterion returns two values
         loss_value = float(loss)
 
@@ -324,7 +293,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             sys.exit(1)
 
         loss /= accum_iter
-        loss_scaler(loss, optimizer, parameters=train_params,
+        loss_scaler(loss, optimizer, parameters=model.parameters(),
                     update_grad=(data_iter_step + 1) % accum_iter == 0)
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
@@ -333,41 +302,39 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         del batch
 
         lr = optimizer.param_groups[0]["lr"]
-        # metric_logger.update(epoch=epoch_f)
+        metric_logger.update(epoch=epoch_f)
         metric_logger.update(lr=lr)
         metric_logger.update(loss=loss_value, **loss_details)
 
-        if (data_iter_step) % accum_iter == 0 and ((data_iter_step) % (accum_iter * args.print_freq)) == 0:
-            # loss_value_reduce = misc.all_reduce_mean(loss_value)  # MUST BE EXECUTED BY ALL NODES
+        if (data_iter_step + 1) % accum_iter == 0 and ((data_iter_step + 1) % (accum_iter * args.print_freq)) == 0:
+            loss_value_reduce = misc.all_reduce_mean(loss_value)  # MUST BE EXECUTED BY ALL NODES
             if log_writer is None:
                 continue
             """ We use epoch_1000x as the x-axis in tensorboard.
             This calibrates different curves when batch size changes.
             """
-            epoch_1000x = int(epoch * len(data_loader) + data_iter_step) // accum_iter
-            log_writer.add_scalar('train_loss', loss_value, epoch_1000x)
+            epoch_1000x = int(epoch_f * 1000)
+            log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
             log_writer.add_scalar('train_lr', lr, epoch_1000x)
             log_writer.add_scalar('train_iter', epoch_1000x, epoch_1000x)
-            for name, _ in loss_details.items():
-                log_writer.add_scalar('train_'+name, getattr(metric_logger, name).avg, epoch_1000x)
+            for name, val in loss_details.items():
+                log_writer.add_scalar('train_'+name, val, epoch_1000x)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
-    stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-    stats['train_iter'] = epoch_1000x
-    return stats
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
 @torch.no_grad()
 def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                    data_loader: Sized, device: torch.device, epoch: int,
-                   args, log_writer=None, prefix='test', kd=False, teacher=None, features=False, curr_step=0):
-                    
+                   args, log_writer=None, prefix='test'):
+
     model.eval()
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.meters = defaultdict(lambda: misc.SmoothedValue(window_size=9**9))
-    header = 'Test Epoch: [{}]\n>'.format(epoch)
+    header = 'Test Epoch: [{}]'.format(epoch)
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
@@ -379,8 +346,8 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     for _, batch in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
         loss_tuple = loss_of_one_batch(batch, model, criterion, device,
-                                       symmetrize_batch=True, features=features,
-                                       use_amp=bool(args.amp), ret='loss', kd=kd, teacher=teacher, lmd=args.lmd)
+                                       symmetrize_batch=True,
+                                       use_amp=bool(args.amp), ret='loss')
         loss_value, loss_details = loss_tuple  # criterion returns two values
         metric_logger.update(loss=float(loss_value), **loss_details)
 
@@ -392,75 +359,11 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     results = {f'{k}_{tag}': getattr(meter, attr) for k, meter in metric_logger.meters.items() for tag, attr in aggs}
 
     if log_writer is not None:
-        epoch_1000x = curr_step
-
         for name, val in results.items():
-            log_writer.add_scalar(prefix+'_'+name, val, epoch_1000x)
+            log_writer.add_scalar(prefix+'_'+name, val, 1000*epoch)
 
     return results
 
-def build_model_enc_dec(model_str, device, args):
-    teacher = load_model("checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth", device)
-    teacher.eval()
-
-    if "x" in args.output_dir:
-        print("Using pretrained Dust3R")
-        model = load_model("checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth", device)
-    else:
-        print("Training from scratch")
-        model = eval(model_str)
-
-    model.to(device)
-    if args.ckpt:
-        ckpt = torch.load(args.ckpt)
-        print(model.load_state_dict(ckpt['model'], strict=True))
-        args.start_epoch = ckpt['epoch']
-        model.train()
-
-    module_list = ['decoder_embed', 'dec_blocks', 'dec_norm', 'dec_blocks2', 'downstream_head1', 'downstream_head2']
-    for m in module_list:
-        getattr(model, m).load_state_dict(getattr(teacher, m).state_dict(), strict=True)
-        getattr(model, m).eval()
-    model.mask_token = teacher.mask_token
-
-    return teacher, model
-
-def set_trainable(model):
-    model.train()
-    module_list = ['decoder_embed', 'dec_blocks', 'dec_norm', 'dec_blocks2', 'downstream_head1', 'downstream_head2']
-    for m in module_list:
-        getattr(model, m).eval()
-    model.mask_token.requires_grad = False
-    return model
-
-def load_pretrained(model_kd, teacher_path, model_kd_path, device):
-    teacher = load_model(teacher_path, device)
-    teacher.eval()
-
-    model = deepcopy(teacher)
-    model.to(device)
-    model.eval()
-
-    model_kd = eval(model_kd)
-    model_kd.to(device)
-    model_kd.eval()
-
-    ckpt = torch.load(model_kd_path, map_location=device)
-    try:
-        print(model_kd.load_state_dict(ckpt['model'], strict=True))
-        args.start_epoch = ckpt['epoch']
-    except:
-        print(model_kd.load_state_dict(ckpt, strict=True))
-    del ckpt  # in case it occupies memory
-
-    model.patch_embed = deepcopy(model_kd.patch_embed)
-    model.mask_generator = deepcopy(model_kd.mask_generator)
-    model.rope = deepcopy(model_kd.rope)
-    model.enc_blocks = deepcopy(model_kd.enc_blocks)
-    model.enc_norm = deepcopy(model_kd.enc_norm)
-    model.adapter = deepcopy(model_kd.adapter)
-
-    return teacher, model
 
 if __name__ == '__main__':
     args = get_args_parser()

@@ -41,7 +41,7 @@ def get_args_parser():
                                                          "If None, will search for an available port starting at 7860."),
                         default=None)
     parser.add_argument("--weights", type=str, required=True, help="path to the model weights")
-    parser.add_argument("--device", type=str, default='cuda', help="pytorch device")
+    parser.add_argument("--device", type=str, default='cuda:6', help="pytorch device")
     parser.add_argument("--tmp_dir", type=str, default=None, help="value for tempfile.tempdir")
     return parser
 
@@ -259,7 +259,7 @@ def main_demo(tmpdirname, model, device, image_size, server_name, server_port):
                                     inputs=[scene, min_conf_thr, as_pointcloud, mask_sky,
                                             clean_depth, transparent_cams, cam_size],
                                     outputs=outmodel)
-    demo.launch(share=False, server_name=server_name, server_port=server_port)
+    demo.launch(share=True, server_name=server_name, server_port=server_port)
 
 
 if __name__ == '__main__':

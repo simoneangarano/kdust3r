@@ -62,7 +62,7 @@ L21 = L21Loss()
 class Criterion (nn.Module):
     def __init__(self, criterion=None):
         super().__init__()
-        assert isinstance(criterion, LLoss), f'{criterion} is not a proper criterion!'+bb()
+        assert isinstance(criterion, LLoss), f'{criterion} is not a proper criterion!' #+bb()
         self.criterion = copy(criterion)
 
     def get_name(self):
@@ -188,7 +188,7 @@ class Regr3D (Criterion, MultiLoss):
         # loss on gt2 side
         l2 = self.criterion(pred_pts2[mask2], gt_pts2[mask2])
         self_name = type(self).__name__
-        details = {self_name+'_pts3d_1': float(l1.mean()), self_name+'_pts3d_2': float(l2.mean())}
+        details = {self_name+'_pts3d': float(l1.mean() + l2.mean())/2}
         return Sum((l1, mask1), (l2, mask2)), (details | monitoring)
 
 
@@ -233,7 +233,7 @@ class ConfLoss (MultiLoss):
         conf_loss1 = conf_loss1.mean() if conf_loss1.numel() > 0 else 0
         conf_loss2 = conf_loss2.mean() if conf_loss2.numel() > 0 else 0
 
-        return conf_loss1 + conf_loss2, dict(conf_loss_1=float(conf_loss1), conf_loss2=float(conf_loss2), **details)
+        return conf_loss1 + conf_loss2, dict(conf_loss=float(conf_loss1 + conf_loss2)/2, **details)
 
 
 class Regr3D_ShiftInv (Regr3D):

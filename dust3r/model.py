@@ -12,9 +12,10 @@ from .heads import head_factory
 from dust3r.patch_embed import get_patch_embed
 
 import dust3r.utils.path_to_croco  # noqa: F401
-from models.croco import CroCoNet  # noqa
+from croco.models.croco import CroCoNet  # noqa
 inf = float('inf')
 
+import time
 
 class AsymmetricCroCo3DStereo (CroCoNet):
     """ Two siamese encoders, followed by two decoders.
@@ -30,10 +31,22 @@ class AsymmetricCroCo3DStereo (CroCoNet):
                  freeze='none',
                  landscape_only=True,
                  patch_embed_cls='PatchEmbedDust3R',  # PatchEmbedDust3R or ManyAR_PatchEmbed
+                 adapter=False,
+                 old=False,
+                 tinyvit=None,
                  **croco_kwargs):
         self.patch_embed_cls = patch_embed_cls
         self.croco_args = fill_default_args(croco_kwargs, super().__init__)
-        super().__init__(**croco_kwargs)
+        super().__init__(**croco_kwargs, adapter=adapter if not old else False)
+
+        self.tinyvit = tinyvit
+        if adapter:
+            self.adapter = torch.nn.Linear(self.enc_embed_dim, 1024)
+            # if not old:
+            #     self.decoder_embed = torch.nn.Linear(1024, self.dec_embed_dim, bias=True)
+        else:
+            self.adapter = None
+        self.old = old
 
         # dust3r specific initialization
         self.dec_blocks2 = deepcopy(self.dec_blocks)
@@ -81,6 +94,8 @@ class AsymmetricCroCo3DStereo (CroCoNet):
         self.head2 = transpose_to_landscape(self.downstream_head2, activate=landscape_only)
 
     def _encode_image(self, image, true_shape):
+        if self.tinyvit is not None:
+            return self.tinyvit(image), None, None
         # embed the image into patches  (x has size B x Npatches x C)
         x, pos = self.patch_embed(image, true_shape=true_shape)
 
@@ -90,7 +105,8 @@ class AsymmetricCroCo3DStereo (CroCoNet):
         # now apply the transformer encoder and normalization
         for blk in self.enc_blocks:
             x = blk(x, pos)
-
+        if self.adapter is not None:
+            x = self.adapter(x)
         x = self.enc_norm(x)
         return x, pos, None
 
@@ -151,16 +167,35 @@ class AsymmetricCroCo3DStereo (CroCoNet):
         head = getattr(self, f'head{head_num}')
         return head(decout, img_shape)
 
-    def forward(self, view1, view2):
+    def forward(self, view1, view2, return_times=False, features_only=False, features=False):
+        times = []
         # encode the two images --> B,S,D
+        t0 = time.time()
         (shape1, shape2), (feat1, feat2), (pos1, pos2) = self._encode_symmetrized(view1, view2)
+        t1 = time.time()
+        times.append(t1 - t0)
 
+        if features_only:
+            if return_times:
+                return (feat1, pos1), (feat2, pos2), times
+            return (feat1, pos1), (feat2, pos2)
         # combine all ref images into object-centric representation
+        t0 = time.time()
         dec1, dec2 = self._decoder(feat1, pos1, feat2, pos2)
-
+        t1 = time.time()
+        times.append(t1 - t0)
         with torch.cuda.amp.autocast(enabled=False):
+            t0 = time.time()
             res1 = self._downstream_head(1, [tok.float() for tok in dec1], shape1)
             res2 = self._downstream_head(2, [tok.float() for tok in dec2], shape2)
-
+            t1 = time.time()
+            times.append(t1 - t0)
         res2['pts3d_in_other_view'] = res2.pop('pts3d')  # predict view2's pts3d in view1's frame
+
+        if features:
+            res1['features'] = feat1
+            res2['features'] = feat2
+        
+        if return_times:
+            return res1, res2, times
         return res1, res2

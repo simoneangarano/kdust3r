@@ -12,7 +12,7 @@ def fill_default_args(kwargs, func):
     signature = inspect.signature(func)
 
     for k, v in signature.parameters.items():
-        if v.default is inspect.Parameter.empty:
+        if v.default is inspect.Parameter.empty or k == 'adapter':
             continue
         kwargs.setdefault(k, v.default)
 

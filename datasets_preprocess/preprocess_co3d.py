@@ -164,6 +164,11 @@ def prepare_sequences(category, co3d_dir, output_dir, img_size, split, min_quali
                      if seq_name in selected_sequences_numbers_dict]
 
     for seq_name, frame_number, filepath in tqdm(sequences_all):
+        image_path = os.path.join(co3d_dir, filepath)
+        try:
+            input_rgb_image = PIL.Image.open(image_path).convert('RGB')
+        except:
+            continue
         frame_idx = int(filepath.split('/')[-1][5:-4])
         selected_sequences_numbers_dict[seq_name].append(frame_idx)
         mask_path = filepath.replace("images", "masks").replace(".jpg", ".png")
@@ -181,10 +186,8 @@ def prepare_sequences(category, co3d_dir, output_dir, img_size, split, min_quali
         frame_data = frame_data_processed[seq_name][frame_number]
         depth_path = os.path.join(co3d_dir, frame_data["depth"]["path"])
         assert frame_data["depth"]["scale_adjustment"] == 1.0
-        image_path = os.path.join(co3d_dir, filepath)
         mask_path_full = os.path.join(co3d_dir, mask_path)
 
-        input_rgb_image = PIL.Image.open(image_path).convert('RGB')
         input_mask = plt.imread(mask_path_full)
 
         with PIL.Image.open(depth_path) as depth_pil:

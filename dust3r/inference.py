@@ -45,7 +45,8 @@ def make_batch_symmetric(batch):
     return view1, view2
 
 
-def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, use_amp=False, ret=None):
+def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, use_amp=False, ret=None, 
+                      return_times=False, features_only=False, features=False, kd=False, teacher=None, lmd=1, criterion_kd=torch.nn.MSELoss()):
     view1, view2 = batch
     for view in batch:
         for name in 'img pts3d valid_mask camera_pose camera_intrinsics F_matrix corres'.split():  # pseudo_focal
@@ -57,18 +58,44 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
         view1, view2 = make_batch_symmetric(batch)
 
     with torch.cuda.amp.autocast(enabled=bool(use_amp)):
-        pred1, pred2 = model(view1, view2)
+        outs = model(view1, view2, return_times=return_times, features_only=features_only, features=features)
+        if return_times:
+            pred1, pred2, times = outs
+        else:
+            pred1, pred2 = outs
 
-        # loss is supposed to be symmetric
-        with torch.cuda.amp.autocast(enabled=False):
-            loss = criterion(view1, view2, pred1, pred2) if criterion is not None else None
+        if features_only:
+            loss = 0
+        else:
+            # loss is supposed to be symmetric
+            with torch.cuda.amp.autocast(enabled=False):
+                loss = criterion(view1, view2, pred1, pred2) if criterion is not None else None
+    
+    if kd:
+        with torch.no_grad():
+            teacher_outs = teacher(view1, view2, return_times=return_times, features_only=features_only, features=features)
+        loss_kd = 0
+        for pred_side, teacher_side in zip(outs, teacher_outs): # for each view
+            pred_feats = pred_side['features']
+            target_feats = teacher_side['features']
+            loss_kd += criterion_kd(pred_feats, target_feats) / 2
+
+            loss_tot = loss[0]
+            loss_tot += loss_kd * lmd
+            loss_dict = loss[1]
+            loss_dict['kd'] = loss_kd.item()
+            loss = (loss_tot, loss_dict)
 
     result = dict(view1=view1, view2=view2, pred1=pred1, pred2=pred2, loss=loss)
+    if return_times:
+        return result, times
+    elif features_only:
+        return outs
     return result[ret] if ret else result
 
 
 @torch.no_grad()
-def inference(pairs, model, device, batch_size=8):
+def inference(pairs, model, device, batch_size=8, return_times=False, features_only=False):
     print(f'>> Inference with model on {len(pairs)} image pairs')
     result = []
 
@@ -78,13 +105,15 @@ def inference(pairs, model, device, batch_size=8):
         batch_size = 1
 
     for i in tqdm.trange(0, len(pairs), batch_size):
-        res = loss_of_one_batch(collate_with_cat(pairs[i:i+batch_size]), model, None, device)
+        res = loss_of_one_batch(collate_with_cat(pairs[i:i+batch_size]), model, None, device, return_times=return_times, features_only=features_only)
+        if return_times:
+            res, times = res
         result.append(to_cpu(res))
 
     result = collate_with_cat(result, lists=multiple_shapes)
 
     torch.cuda.empty_cache()
-    return result
+    return result, times if return_times else result
 
 
 def check_if_same_size(pairs):

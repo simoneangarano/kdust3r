@@ -1,5 +1,8 @@
 # Copyright (C) 2024-present Naver Corporation. All rights reserved.
 # Licensed under CC BY-NC-SA 4.0 (non-commercial use only).
+import numpy as np
+import random
+
 from .utils.transforms import *
 from .base.batched_sampler import BatchedRandomSampler  # noqa: F401
 from .co3d import Co3d  # noqa: F401
@@ -30,6 +33,15 @@ def get_data_loader(dataset, batch_size, num_workers=8, shuffle=True, drop_last=
         else:
             sampler = torch.utils.data.SequentialSampler(dataset)
 
+    def seed_worker(worker_id):
+        worker_seed = torch.initial_seed() % 2**32
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+
+    g = torch.Generator()
+    g.manual_seed(777)
+
+
     data_loader = torch.utils.data.DataLoader(
         dataset,
         sampler=sampler,
@@ -37,6 +49,8 @@ def get_data_loader(dataset, batch_size, num_workers=8, shuffle=True, drop_last=
         num_workers=num_workers,
         pin_memory=pin_mem,
         drop_last=drop_last,
+        worker_init_fn=seed_worker,
+        generator=g
     )
 
     return data_loader
