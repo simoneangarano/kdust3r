@@ -21,6 +21,7 @@ import croco.utils.misc as misc  # noqa
 
 TEST_DATA = "1000 @ Co3d(split='test', ROOT='/ssd1/wenyan/co3d_2_cat_processed', resolution=224, seed=777)"
 TEST_DATA += " + 1000 @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777)"
+TEST_DATA += " + 1000 @ ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777)"
 MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
             output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
             enc_embed_dim=384, enc_depth=12, enc_num_heads=6, dec_embed_dim=768, dec_depth=12, dec_num_heads=12, adapter=True)"
@@ -55,8 +56,8 @@ def get_args_parser():
 
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
     parser.add_argument('--output_dir', default='./log/train/', type=str, help="path where to save the output")
-    parser.add_argument('--cuda', default=0, type=int, help="cuda device")
-    parser.add_argument('--ckpt', default='log/10_1%_depth/checkpoint-best.pth', type=str, help="resume from checkpoint") # "log/ckpt/iter_24750.pth"
+    parser.add_argument('--cuda', default=7, type=int, help="cuda device")
+    parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/co3d_scannet_10/checkpoint-best.pth', type=str, help="resume from checkpoint") # "log/ckpt/iter_24750.pth"
     parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
     parser.add_argument('--accum_iter', default=1, type=int, help="Accumulate gradient iterations")
     parser.add_argument('--kd', default=True, type=bool)

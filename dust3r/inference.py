@@ -46,7 +46,7 @@ def make_batch_symmetric(batch):
 
 
 def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, use_amp=False, ret=None, 
-                      return_times=False, features_only=False, features=False, kd=False, teacher=None, lmd=1, criterion_kd=torch.nn.MSELoss()):
+                      return_times=False, features_only=False, features=False, kd=False, kd_out=False, teacher=None, lmd=1, criterion_kd=torch.nn.MSELoss()):
     view1, view2 = batch
     for view in batch:
         for name in 'img pts3d valid_mask camera_pose camera_intrinsics F_matrix corres'.split():  # pseudo_focal
@@ -64,7 +64,7 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
         else:
             pred1, pred2 = outs
 
-        if features_only:
+        if features_only or kd_out:
             loss = 0
         else:
             # loss is supposed to be symmetric
@@ -74,17 +74,24 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
     if kd:
         with torch.no_grad():
             teacher_outs = teacher(view1, view2, return_times=return_times, features_only=features_only, features=features)
+
+        if kd_out:
+            teach1, teach2 = teacher_outs
+            # loss is supposed to be symmetric
+            with torch.cuda.amp.autocast(enabled=False):
+                loss = criterion(teach1, teach2, pred1, pred2) if criterion is not None else None
+
         loss_kd = 0
+        loss_tot = loss[0].clone()
+        loss_dict = loss[1].copy()
         for pred_side, teacher_side in zip(outs, teacher_outs): # for each view
             pred_feats = pred_side['features']
             target_feats = teacher_side['features']
             loss_kd += criterion_kd(pred_feats, target_feats) / 2
-
-            loss_tot = loss[0]
             loss_tot += loss_kd * lmd
-            loss_dict = loss[1]
-            loss_dict['kd'] = loss_kd.item()
-            loss = (loss_tot, loss_dict)
+            
+        loss_dict['kd'] = loss_kd.item()
+        loss = (loss_tot, loss_dict)
 
     result = dict(view1=view1, view2=view2, pred1=pred1, pred2=pred2, loss=loss)
     if return_times:

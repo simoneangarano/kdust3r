@@ -97,8 +97,16 @@ class BaseStereoViewDataset (EasyDataset):
                 assert np.isfinite(view['camera_pose']).all(), f'NaN in camera pose for view {view_name(view)}'
             assert 'pts3d' not in view
             assert 'valid_mask' not in view
-            assert np.isfinite(view['depthmap']).all(), f'NaN in depthmap for view {view_name(view)}'
-            pts3d, valid_mask = depthmap_to_absolute_camera_coordinates(**view)
+            if 'depthmap' not in view:
+                view['depthmap'] = np.zeros((height, width), dtype=np.float32)
+            else:
+                assert np.isfinite(view['depthmap']).all(), f'NaN in depthmap for view {view_name(view)}'
+            if view['camera_intrinsics'] is None:
+                view['camera_intrinsics'] = np.full((3, 3), np.nan, dtype=np.float32)
+                pts3d = np.zeros((height, width, 3), dtype=np.float32)
+                valid_mask = np.ones((height, width), dtype=np.bool)
+            else:
+                pts3d, valid_mask = depthmap_to_absolute_camera_coordinates(**view)
 
             view['pts3d'] = pts3d
             view['valid_mask'] = valid_mask & np.isfinite(pts3d).all(axis=-1)
@@ -178,8 +186,38 @@ class BaseStereoViewDataset (EasyDataset):
         crop_bbox = cropping.bbox_from_intrinsics_in_out(intrinsics, intrinsics2, resolution)
         image, depthmap, intrinsics2 = cropping.crop_image_depthmap(image, depthmap, intrinsics, crop_bbox)
 
+
         return image, depthmap, intrinsics2
 
+    def _crop_resize_image(self, image, resolution, depthmap=None, intrinsics=None, rng=None, info=None):
+            """ This function:
+                - first downsizes the image with LANCZOS inteprolation,
+                which is better than bilinear interpolation in
+            """
+            if not isinstance(image, PIL.Image.Image):
+                image = PIL.Image.fromarray(image)
+            
+            # transpose the resolution if necessary
+            W, H = image.size  # new size
+            assert resolution[0] >= resolution[1]
+            if H > 1.1*W:
+                # image is portrait mode
+                resolution = resolution[::-1]
+            elif 0.9 < H/W < 1.1 and resolution[0] != resolution[1]:
+                # image is square, so we chose (portrait, landscape) randomly
+                if rng.integers(2):
+                    resolution = resolution[::-1]
+
+            # high-quality Lanczos down-scaling
+            target_resolution = np.array(resolution)
+            if self.aug_crop > 1:
+                target_resolution += rng.integers(0, self.aug_crop)
+            image, depthmap, intrinsics = cropping.rescale_image_depthmap(image, depthmap, intrinsics, target_resolution)
+            intrinsics2 = cropping.camera_matrix_of_crop(intrinsics, image.size, resolution, offset_factor=0.5)
+            crop_bbox = cropping.bbox_from_intrinsics_in_out(intrinsics, intrinsics2, resolution)
+            image, depthmap, intrinsics2 = cropping.crop_image_depthmap(image, depthmap, intrinsics, crop_bbox)
+
+            return image
 
 def is_good_type(key, v):
     """ returns (is_good, err_msg) 

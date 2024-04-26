@@ -137,3 +137,5 @@ log*/
 output/
 test/
 utils/__pycache__/*
+*.ply
+*.pyc

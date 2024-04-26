@@ -148,34 +148,41 @@ class Regr3D (Criterion, MultiLoss):
               = (RT21 @ pred_D2) - (RT1^-1 @ RT2 @ D2)
     """
 
-    def __init__(self, criterion, norm_mode='avg_dis', gt_scale=False):
+    def __init__(self, criterion, norm_mode='avg_dis', gt_scale=False, kd=False):
         super().__init__(criterion)
         self.norm_mode = norm_mode
         self.gt_scale = gt_scale
+        self.kd = kd
 
     def get_all_pts3d(self, gt1, gt2, pred1, pred2, dist_clip=None):
-        # everything is normalized w.r.t. camera of view1
-        in_camera1 = inv(gt1['camera_pose'])
-        gt_pts1 = geotrf(in_camera1, gt1['pts3d'])  # B,H,W,3
-        gt_pts2 = geotrf(in_camera1, gt2['pts3d'])  # B,H,W,3
+        valid1 = valid2 = torch.ones_like(gt1['pts3d'][..., 0], dtype=torch.bool)
 
-        valid1 = gt1['valid_mask'].clone()
-        valid2 = gt2['valid_mask'].clone()
+        if not self.kd:
+            # everything is normalized w.r.t. camera of view1
+            in_camera1 = inv(gt1['camera_pose'])
+            gt_pts1 = geotrf(in_camera1, gt1['pts3d'])  # B,H,W,3
+            gt_pts2 = geotrf(in_camera1, gt2['pts3d'])  # B,H,W,3
 
-        if dist_clip is not None:
-            # points that are too far-away == invalid
-            dis1 = gt_pts1.norm(dim=-1)  # (B, H, W)
-            dis2 = gt_pts2.norm(dim=-1)  # (B, H, W)
-            valid1 = valid1 & (dis1 <= dist_clip)
-            valid2 = valid2 & (dis2 <= dist_clip)
+            if dist_clip is not None:
+                # points that are too far-away == invalid
+                dis1 = gt_pts1.norm(dim=-1)  # (B, H, W)
+                dis2 = gt_pts2.norm(dim=-1)  # (B, H, W)
+                valid1 = valid1 & (dis1 <= dist_clip)
+                valid2 = valid2 & (dis2 <= dist_clip)
 
-        pr_pts1 = get_pred_pts3d(gt1, pred1, use_pose=False)
-        pr_pts2 = get_pred_pts3d(gt2, pred2, use_pose=True)
+            pr_pts1 = get_pred_pts3d(gt1, pred1, use_pose=False)
+            pr_pts2 = get_pred_pts3d(gt2, pred2, use_pose=True)
 
+        else:
+            pr_pts1 = get_pred_pts3d(gt=None, pred=pred1, use_pose=False)
+            pr_pts2 = get_pred_pts3d(gt=None, pred=pred2, use_pose=True)
+            gt_pts1 = get_pred_pts3d(gt=None, pred=gt1, use_pose=False)
+            gt_pts2 = get_pred_pts3d(gt=None, pred=gt2, use_pose=True)
+        
         # normalize 3d points
         if self.norm_mode:
             pr_pts1, pr_pts2 = normalize_pointcloud(pr_pts1, pr_pts2, self.norm_mode, valid1, valid2)
-        if self.norm_mode and not self.gt_scale:
+        if self.norm_mode and (not self.gt_scale or self.kd):
             gt_pts1, gt_pts2 = normalize_pointcloud(gt_pts1, gt_pts2, self.norm_mode, valid1, valid2)
 
         return gt_pts1, gt_pts2, pr_pts1, pr_pts2, valid1, valid2, {}

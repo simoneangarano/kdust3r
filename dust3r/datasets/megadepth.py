@@ -11,7 +11,7 @@ import json
 import itertools
 from collections import deque
 
-import cv2
+import cv2, os
 import numpy as np
 import torch
 
@@ -19,7 +19,7 @@ from dust3r.datasets.base.base_stereo_view_dataset import BaseStereoViewDataset
 from dust3r.utils.image import imread_cv2
 
 
-class Co3d(BaseStereoViewDataset):
+class MegaDepth(BaseStereoViewDataset):
     def __init__(self, mask_bg=True, features=False, *args, ROOT, **kwargs):
         self.ROOT = ROOT
         super().__init__(*args, **kwargs)
@@ -31,8 +31,8 @@ class Co3d(BaseStereoViewDataset):
         with open(osp.join(self.ROOT, f'selected_seqs_{self.split}.json'), 'r') as f:
             self.scenes = json.load(f)
             self.scenes = {k: v for k, v in self.scenes.items() if len(v) > 0}
-            self.scenes = {(k, k2): v2 for k, v in self.scenes.items()
-                           for k2, v2 in v.items()}
+            # self.scenes = {(k, k2): v2 for k, v in self.scenes.items()
+            #                for k2, v2 in v.items()}
         self.scene_list = list(self.scenes.keys())
 
         # for each scene, we have 100 images ==> 360 degrees (so 25 frames ~= 90 degrees)
@@ -48,18 +48,18 @@ class Co3d(BaseStereoViewDataset):
 
     def _get_views(self, idx, resolution, rng):
         # choose a scene
-        obj, instance = self.scene_list[idx // len(self.combinations)]
-        image_pool = self.scenes[obj, instance]
+        obj = self.scene_list[idx // len(self.combinations)]
+        image_pool = self.scenes[obj]
         im1_idx, im2_idx = self.combinations[idx % len(self.combinations)]
 
         # add a bit of randomness
         last = len(image_pool)-1
 
-        if resolution not in self.invalidate[obj, instance]:  # flag invalid images
-            self.invalidate[obj, instance][resolution] = [False for _ in range(len(image_pool))]
+        if resolution not in self.invalidate[obj]:  # flag invalid images
+            self.invalidate[obj][resolution] = [False for _ in range(len(image_pool))]
 
         # decide now if we mask the bg
-        mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2)) # 50% chance
+        # mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2)) # 50% chance
 
         views = []
         imgs_idxs = [max(0, min(im_idx + rng.integers(-4, 5), last)) for im_idx in [im2_idx, im1_idx]]
@@ -68,44 +68,48 @@ class Co3d(BaseStereoViewDataset):
             im_idx = imgs_idxs.pop()
 
             try:
-                if self.invalidate[obj, instance][resolution][im_idx]:
+                if self.invalidate[obj][resolution][im_idx]:
                     # search for a valid image
                     random_direction = 2 * rng.choice(2) - 1
                     for offset in range(1, len(image_pool)):
                         tentative_im_idx = (im_idx + (random_direction * offset)) % len(image_pool)
-                        if not self.invalidate[obj, instance][resolution][tentative_im_idx]:
+                        if not self.invalidate[obj][resolution][tentative_im_idx]:
                             im_idx = tentative_im_idx
                             break
             except:
-                print(obj, instance, resolution, im_idx)
+                print(obj, resolution, im_idx)
                 raise ValueError
             view_idx = image_pool[im_idx]
 
-            impath = osp.join(self.ROOT, obj, instance, 'images', f'frame{view_idx:06n}.jpg')
-
+            if os.path.exists(osp.join(self.ROOT, obj, 'dense0')):
+                impath = osp.join(self.ROOT, obj, 'dense0/imgs', f'{view_idx}.jpg')
+                rgb_image = imread_cv2(impath)
+            else:
+                impath = osp.join(self.ROOT, obj, 'dense1/imgs', f'{view_idx}.jpg')
+                rgb_image = imread_cv2(impath)            
+            
             # load camera params
-            input_metadata = np.load(impath.replace('jpg', 'npz'))
-            camera_pose = input_metadata['camera_pose'].astype(np.float32)
-            intrinsics = input_metadata['camera_intrinsics'].astype(np.float32)
+            # input_metadata = np.load(impath.replace('jpg', 'npz'))
+            # camera_pose = input_metadata['camera_pose'].astype(np.float32)
+            intrinsics = np.eye(3, dtype=np.float32)
 
             # load image and depth
-            rgb_image = imread_cv2(impath)
-            depthmap = imread_cv2(impath.replace('images', 'depths') + '.geometric.png', cv2.IMREAD_UNCHANGED)
-            depthmap = (depthmap.astype(np.float32) / 65535) * np.nan_to_num(input_metadata['maximum_depth'])
+            # depthmap = imread_cv2(impath.replace('images', 'depths') + '.geometric.png', cv2.IMREAD_UNCHANGED)
+            # depthmap = (depthmap.astype(np.float32) / 65535) * np.nan_to_num(input_metadata['maximum_depth'])
 
-            if mask_bg:
-                # load object mask
-                maskpath = osp.join(self.ROOT, obj, instance, 'masks', f'frame{view_idx:06n}.png')
-                maskmap = imread_cv2(maskpath, cv2.IMREAD_UNCHANGED).astype(np.float32)
-                maskmap = (maskmap / 255.0) > 0.1
+            # if mask_bg:
+            #     # load object mask
+            #     maskpath = osp.join(self.ROOT, obj, instance, 'masks', f'frame{view_idx:06n}.png')
+            #     maskmap = imread_cv2(maskpath, cv2.IMREAD_UNCHANGED).astype(np.float32)
+            #     maskmap = (maskmap / 255.0) > 0.1
 
-                # update the depthmap with mask
-                depthmap *= maskmap
+            #     # update the depthmap with mask
+            #     depthmap *= maskmap
 
-            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, depthmap, intrinsics, resolution, rng=rng, info=impath)
+            rgb_image = self._crop_resize_image(
+                rgb_image, resolution, rng=rng, info=impath, intrinsics=intrinsics)
 
-            num_valid = (depthmap > 0.0).sum()
+            # num_valid = (depthmap > 0.0).sum()
             # if num_valid == 0:
             #     # problem, invalidate image and retry
             #     # print(f"Invalid image {impath} for {obj} {instance} {resolution} {im_idx}")
@@ -122,11 +126,9 @@ class Co3d(BaseStereoViewDataset):
 
             views.append(dict(
                 img=rgb_image,
-                depthmap=depthmap,
-                camera_pose=camera_pose,
                 camera_intrinsics=intrinsics,
-                dataset='Co3d_v2',
-                label=osp.join(obj, instance),
+                dataset='MegaDepth_v1',
+                label=osp.join(obj),
                 instance=osp.split(impath)[1],
                 img_path=impath,
                 points=points,

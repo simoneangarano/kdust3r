@@ -73,8 +73,9 @@ def rescale_image_depthmap(image, depthmap, camera_intrinsics, output_resolution
                               fy=scale_final, interpolation=cv2.INTER_NEAREST)
 
     # no offset here; simple rescaling
-    camera_intrinsics = camera_matrix_of_crop(
-        camera_intrinsics, input_resolution, output_resolution, scaling=scale_final)
+    if camera_intrinsics is not None:
+        camera_intrinsics = camera_matrix_of_crop(
+            camera_intrinsics, input_resolution, output_resolution, scaling=scale_final)
 
     return image.to_pil(), depthmap, camera_intrinsics
 
@@ -103,7 +104,7 @@ def crop_image_depthmap(image, depthmap, camera_intrinsics, crop_bbox):
     l, t, r, b = crop_bbox
 
     image = image.crop((l, t, r, b))
-    depthmap = depthmap[t:b, l:r]
+    depthmap = depthmap[t:b, l:r] if depthmap is not None else None
 
     camera_intrinsics = camera_intrinsics.copy()
     camera_intrinsics[0, 2] -= l
