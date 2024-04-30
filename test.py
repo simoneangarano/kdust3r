@@ -19,19 +19,20 @@ import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa
 
 
-TEST_DATA = "1000 @ Co3d(split='test', ROOT='/ssd1/wenyan/co3d_2_cat_processed', resolution=224, seed=777)"
-TEST_DATA += " + 1000 @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777)"
-TEST_DATA += " + 1000 @ ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777)"
+TEST_DATA = "Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
+TEST_DATA += " + ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
+TEST_DATA += " + DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
+
 MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
             output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
             enc_embed_dim=384, enc_depth=12, enc_num_heads=6, dec_embed_dim=768, dec_depth=12, dec_num_heads=12, adapter=True)"
 CKPT = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
 CKPT_KD = None # "checkpoints/DUSt3R_ViTSmall_BaseDecoder_512_dpt_kd.pth"
-TEST_CRITERION = "Regr3D_ScaleShiftInv(L21, gt_scale=True)"
+TEST_CRITERION = "ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd=True), alpha=0.2) + Regr3D_ScaleShiftInv(L21, gt_scale=True, kd=True)"
 
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('DUST3R training', add_help=False)
+    parser = argparse.ArgumentParser('DUSt3R training', add_help=False)
     # model and criterion
     parser.add_argument('--model', default=MODEL_KD, type=str, help="string containing the model to build")
     parser.add_argument('--pretrained', default=None, help='path of a starting checkpoint') # CKPT_KD
@@ -50,17 +51,18 @@ def get_args_parser():
                         help='frequence (number of epochs) to save checkpoint in checkpoint-last.pth')
     parser.add_argument('--keep_freq', default=1, type=int,
                         help='frequence (number of epochs) to save checkpoint in checkpoint-%d.pth')
-    parser.add_argument('--print_freq', default=100, type=int,
+    parser.add_argument('--print_freq', default=1000, type=int,
                         help='frequence (number of iterations) to print infos while training')
     parser.add_argument('--teacher_path', default=CKPT, type=str, help="path to the teacher model")
 
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
     parser.add_argument('--output_dir', default='./log/train/', type=str, help="path where to save the output")
     parser.add_argument('--cuda', default=7, type=int, help="cuda device")
-    parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/co3d_scannet_10/checkpoint-best.pth', type=str, help="resume from checkpoint") # "log/ckpt/iter_24750.pth"
+    parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/train_2/checkpoint-best.pth', type=str, help="resume from checkpoint") # "log/ckpt/iter_24750.pth"
     parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
     parser.add_argument('--accum_iter', default=1, type=int, help="Accumulate gradient iterations")
     parser.add_argument('--kd', default=True, type=bool)
+    parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
 
     return parser
 
@@ -69,12 +71,8 @@ def main(args):
     misc.init_distributed_mode(args)
     # global_rank = misc.get_rank()
 
-    print("output_dir: "+args.output_dir)
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-
-    print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
-    print("{}".format(args).replace(', ', ',\n'))
 
     device = f"cuda:{args.cuda}" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
@@ -110,9 +108,10 @@ def main(args):
 
     # Test on multiple datasets
     for test_name, testset in data_loader_test.items():
-        test_one_epoch(teacher, test_criterion, testset,
-                       device, 0, log_writer=log_writer, args=args, prefix=test_name,
-                       kd=args.kd, teacher=teacher, features=args.kd, curr_step=train_stats['train_iter'])
+        # test_one_epoch(teacher, test_criterion, testset,
+        #                device, 0, log_writer=log_writer, args=args, prefix=test_name,
+        #                kd=args.kd, teacher=teacher, features=args.kd, curr_step=train_stats['train_iter'])
+        print(test_name)
         test_one_epoch(model, test_criterion, testset,
                        device, 0, log_writer=log_writer, args=args, prefix=test_name,
                        kd=args.kd, teacher=teacher, features=args.kd, curr_step=train_stats['train_iter'])
@@ -135,7 +134,7 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     for _, batch in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
         loss_tuple = loss_of_one_batch(batch, model, criterion, device,
                                        symmetrize_batch=True, features=features,
-                                       ret='loss', kd=kd, teacher=teacher, lmd=args.lmd)
+                                       ret='loss', kd=kd, kd_out=args.kd_out, teacher=teacher, lmd=args.lmd)
         loss_value, loss_details = loss_tuple  # criterion returns two values
         metric_logger.update(loss=float(loss_value), **loss_details)
 

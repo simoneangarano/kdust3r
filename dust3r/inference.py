@@ -94,6 +94,9 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
         loss = (loss_tot, loss_dict)
 
     result = dict(view1=view1, view2=view2, pred1=pred1, pred2=pred2, loss=loss)
+    if kd:
+        result['teacher_outs'] = teacher_outs
+
     if return_times:
         return result, times
     elif features_only:

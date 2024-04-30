@@ -26,18 +26,19 @@ import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa
 from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler  # noqa
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"
+os.environ['CUDA_VISIBLE_DEVICES'] = "7"
 
-TRAIN_DATA = "Co3d(split='train', ROOT='/ssd1/wenyan/co3d_2_cat_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter)"
-TRAIN_DATA += " + ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter)"
-TRAIN_DATA += " + 70000 @ DL3DV(split='train', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter)"
-TRAIN_DATA += " + 70000 @ MegaDepth(split='train', ROOT='/ssd1/sa58728/dust3r/data/MegaDepth_v1', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter)"
+TRAIN_DATA = "100000 @ Co3d(split='train', ROOT='/ssd1/wenyan/co3d_2_cat_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=True)"
+TRAIN_DATA += "+ 100000 @ ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=True)"
+TRAIN_DATA += "+ 100000 @ DL3DV(split='train', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=True)"
+# TRAIN_DATA += " + 70000 @ MegaDepth(split='train', ROOT='/ssd1/sa58728/dust3r/data/MegaDepth_v1', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=True)"
 
-TEST_DATA =  "100 @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777)" # Unseen scenes
-TEST_DATA += " + 100 @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777)" # Unseen scenes
-TEST_DATA += " + 100 @ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777)" # Unseen scenes
-TEST_DATA += " + 100 @ MegaDepth(split='test', ROOT='/ssd1/sa58728/dust3r/data/MegaDepth_v1', resolution=224, seed=777)" # Unseen scenes
-# TEST_DATA += " + 100 @ Co3d(split='test', ROOT='/ssd1/wenyan/co3d_2_cat_processed', resolution=224, seed=777)" # Seen scenes
+TEST_DATA =  "1000 @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
+TEST_DATA += " + 1000 @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
+TEST_DATA += " + 1000 @ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
+# TEST_DATA += " + 1000 @ MegaDepth(split='test', ROOT='/ssd1/sa58728/dust3r/data/MegaDepth_v1', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
+
+# TEST_DATA += " + 1000 @ Co3d(split='test', ROOT='/ssd1/wenyan/co3d_2_cat_processed', resolution=224, seed=777, gaussian_frames=True)" # Seen scenes
 
 MODEL = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
          output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
@@ -56,7 +57,6 @@ def get_args_parser():
     # model and criterion
     parser.add_argument('--model', default=MODEL_KD,
                         type=str, help="string containing the model to build")
-    parser.add_argument('--pretrained', default=None, help='path of a starting checkpoint') # CKPT_KD
     parser.add_argument('--train_criterion', default=TRAIN_CRITERION,
                         type=str, help="train criterion")
     parser.add_argument('--test_criterion', default=TEST_CRITERION, type=str, help="test criterion")
@@ -67,7 +67,7 @@ def get_args_parser():
 
     # training
     parser.add_argument('--seed', default=777, type=int, help="Random seed")
-    parser.add_argument('--epochs', default=10, type=int, help="Maximum number of epochs for the scheduler")
+    parser.add_argument('--epochs', default=100, type=int, help="Maximum number of epochs for the scheduler")
 
     parser.add_argument('--weight_decay', type=float, default=0.00005, help="weight decay (default: 0.05)")
     parser.add_argument('--lr', type=float, default=0.0001, metavar='LR', help='learning rate (absolute lr)')
@@ -103,9 +103,10 @@ def get_args_parser():
 
 
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='./log/c_s_m_d_2/', type=str, help="path where to save the output")
+    parser.add_argument('--output_dir', default='./log//', type=str, help="path where to save the output")
     parser.add_argument('--cuda', default=-1, type=int, help="cuda device")
-    parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint") # 'log/train_10_1%/checkpoint-1.pth'
+    parser.add_argument('--pretrained', default=True, help='path of a starting checkpoint') # CKPT_KD
+    parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/train_2/checkpoint-best.pth', type=str, help="resume from checkpoint") # 'log/train_10_1%/checkpoint-1.pth'
     parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
     parser.add_argument('--accum_iter', default=1, type=int, help="Accumulate gradient iterations")
 
@@ -142,24 +143,16 @@ def main(args):
                         for dataset in args.test_dataset.split('+')}
 
     # model and criterion
-    if not args.test:
-        teacher, model = build_model_enc_dec(args.model, device, args)
-    else:
+    if args.test or args.pretrained:
         teacher, model = load_pretrained(args.model, args.teacher_path, args.ckpt, device)
+    else:
+        teacher, model = build_model_enc_dec(args.model, device, args)
+
 
     train_criterion = eval(args.train_criterion).to(device)
     test_criterion = eval(args.test_criterion or args.criterion).to(device)
 
     model.to(device)
-
-    if args.pretrained and not args.resume:
-        print('Loading pretrained: ', args.pretrained)
-        ckpt = torch.load(args.pretrained, map_location=device)
-        if not args.kd:
-            print(model.load_state_dict(ckpt['model'], strict=False))
-        else:
-            print(model.load_state_dict(ckpt, strict=False))
-        del ckpt  # in case it occupies memory
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
     if args.lr is None:  # only base_lr is specified
@@ -423,6 +416,7 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         log_writer.add_scalar(prefix+'_'+name, val, epoch_1000x)
     return results
 
+
 def build_model_enc_dec(model_str, device, args):
     teacher = load_model("checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth", device)
     teacher.eval()
@@ -449,6 +443,7 @@ def build_model_enc_dec(model_str, device, args):
 
     return teacher, model
 
+
 def set_trainable(model):
     model.train()
     module_list = ['decoder_embed', 'dec_blocks', 'dec_norm', 'dec_blocks2', 'downstream_head1', 'downstream_head2']
@@ -463,7 +458,9 @@ def set_trainable(model):
         model.module.mask_token.requires_grad = False
     return model
 
+
 def load_pretrained(model_kd, teacher_path, model_kd_path, device):
+    print("Loading student model from: ", model_kd_path)
     teacher = load_model(teacher_path, device)
     teacher.eval()
 
@@ -492,8 +489,9 @@ def load_pretrained(model_kd, teacher_path, model_kd_path, device):
 
     return teacher, model
 
+
 def do_test_now(data_iter_step, accum_iter):
-    output = (data_iter_step) % accum_iter == 0 and ((data_iter_step) % (accum_iter * 5000)) < 4
+    output = (data_iter_step) % accum_iter == 0 and ((data_iter_step) % (accum_iter * 2500)) == 0
     return output
 
 if __name__ == '__main__':

@@ -182,7 +182,7 @@ class Regr3D (Criterion, MultiLoss):
         # normalize 3d points
         if self.norm_mode:
             pr_pts1, pr_pts2 = normalize_pointcloud(pr_pts1, pr_pts2, self.norm_mode, valid1, valid2)
-        if self.norm_mode and (not self.gt_scale or self.kd):
+        if self.norm_mode and (not self.gt_scale):
             gt_pts1, gt_pts2 = normalize_pointcloud(gt_pts1, gt_pts2, self.norm_mode, valid1, valid2)
 
         return gt_pts1, gt_pts2, pr_pts1, pr_pts2, valid1, valid2, {}

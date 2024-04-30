@@ -139,3 +139,5 @@ test/
 utils/__pycache__/*
 *.ply
 *.pyc
+pairs/
+test_pairs/

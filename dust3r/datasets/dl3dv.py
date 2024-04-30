@@ -35,11 +35,18 @@ class DL3DV(BaseStereoViewDataset):
             #                for k2, v2 in v.items()}
         self.scene_list = list(self.scenes.keys())
 
-        # for each scene, we have 100 images ==> 360 degrees (so 25 frames ~= 90 degrees)
-        # we prepare all combinations such that i-j = +/- [5, 10, .., 90] degrees
-        self.combinations = [(i, j)
-                             for i, j in itertools.combinations(range(100), 2)
-                             if 0 < abs(i-j) <= 30 and abs(i-j) % 5 == 0]
+        if self.gaussian_frames:
+            self.combinations = [(i, j)
+                                for i, j in itertools.combinations(range(100), 2)
+                                if abs(i-j) == 3
+                                ]
+        else:
+            # for each scene, we have 100 images ==> 360 degrees (so 25 frames ~= 90 degrees)
+            # we prepare all combinations such that i-j = +/- [5, 10, .., 90] degrees
+            self.combinations = [(i, j)
+                                for i, j in itertools.combinations(range(100), 2)
+                                if 0 < abs(i-j) <= 30 and abs(i-j) % 5 == 0
+                                ]
 
         self.invalidate = {scene: {} for scene in self.scene_list}
 
@@ -62,7 +69,10 @@ class DL3DV(BaseStereoViewDataset):
         # mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2)) # 50% chance
 
         views = []
-        imgs_idxs = [max(0, min(im_idx + rng.integers(-4, 5), last)) for im_idx in [im2_idx, im1_idx]]
+        if self.gaussian_frames:
+            imgs_idxs = [max(0, min(im_idx + int(rng.normal(loc=0.0, scale=3)), last)) for im_idx in [im2_idx, im1_idx]]
+        else:
+            imgs_idxs = [max(0, min(im_idx + rng.integers(-4, 5), last)) for im_idx in [im2_idx, im1_idx]]
         imgs_idxs = deque(imgs_idxs)
         while len(imgs_idxs) > 0:  # some images (few) have zero depth
             im_idx = imgs_idxs.pop()

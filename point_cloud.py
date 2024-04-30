@@ -12,7 +12,7 @@ import copy
 def main():
     lmd = "10" 
     model_path = "checkpoints/DUSt3R_ViTSmall_BaseDecoder_512_dpt_kd.pth"
-    model_kd_path = f'log/train_10/checkpoint-final.pth' # "checkpoints/DUSt3R_ViTSmall_BaseDecoder_512_dpt_kd.pth"
+    model_kd_path = f'log/train_2/checkpoint-best.pth' # "checkpoints/DUSt3R_ViTSmall_BaseDecoder_512_dpt_kd.pth"
     model_kd = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
                 output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
                 enc_embed_dim=384, enc_depth=12, enc_num_heads=6, dec_embed_dim=768, dec_depth=12, dec_num_heads=12, adapter=True)"
@@ -21,9 +21,9 @@ def main():
             # enc_embed_dim=1024, enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12)"
     teacher_path = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
     
-    test_subsets = ['co3d_test_1', 'co3d_test_2'] # ['croco', 'dtu', 'co3d_test_1', 'co3d_test_2']
+    test_subsets = ['co3d_test_1', 'co3d_test_2', 'croco', 'dtu'] # ['croco', 'dtu', 'co3d_test_1', 'co3d_test_2']
 
-    device = 'cuda:6'
+    device = 'cuda:7'
     batch_size = 1
     schedule = 'cosine'
     lr = 0.01
