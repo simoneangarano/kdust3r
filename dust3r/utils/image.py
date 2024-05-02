@@ -13,12 +13,12 @@ import torchvision.transforms as tvf
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 import cv2  # noqa
 
-try:
-    from pillow_heif import register_heif_opener  # noqa
-    register_heif_opener()
-    heif_support_enabled = True
-except ImportError:
-    heif_support_enabled = False
+# try:
+#     from pillow_heif import register_heif_opener  # noqa
+#     register_heif_opener()
+#     heif_support_enabled = True
+# except ImportError:
+heif_support_enabled = False
 
 ImgNorm = tvf.Compose([tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
@@ -65,7 +65,7 @@ def _resize_pil_image(img, long_edge_size):
     return img.resize(new_size, interp)
 
 
-def load_images(folder_or_list, size, square_ok=False):
+def load_images(folder_or_list, size, square_ok=False, return_pil=False):
     """ open and convert all images in a list or folder to proper input format for DUSt3R
     """
     if isinstance(folder_or_list, str):
@@ -109,7 +109,11 @@ def load_images(folder_or_list, size, square_ok=False):
 
         W2, H2 = img.size
         print(f' - adding {path} with resolution {W1}x{H1} --> {W2}x{H2}')
-        imgs.append(dict(img=ImgNorm(img)[None], true_shape=np.int32(
+        if return_pil:
+            imgs.append(dict(img=img, true_shape=np.int32(
+            [img.size[::-1]]), idx=len(imgs), instance=str(len(imgs))))
+        else:
+            imgs.append(dict(img=ImgNorm(img)[None], true_shape=np.int32(
             [img.size[::-1]]), idx=len(imgs), instance=str(len(imgs))))
 
     assert imgs, 'no images foud at '+root

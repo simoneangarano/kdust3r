@@ -11,6 +11,9 @@ from dust3r.model import AsymmetricCroCo3DStereo, inf  # noqa: F401, needed when
 from dust3r.utils.misc import invalid_to_nans
 from dust3r.utils.geometry import depthmap_to_pts3d, geotrf
 
+SIZE = 224
+ROMA_STD = torch.Tensor([0.229, 0.224, 0.225])[:,None,None]
+ROMA_MEAN = torch.Tensor([0.485, 0.456, 0.406])[:,None,None]
 
 def load_model(model_path, device):
     print('... loading model from', model_path)
@@ -46,7 +49,9 @@ def make_batch_symmetric(batch):
 
 
 def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, use_amp=False, ret=None, 
-                      return_times=False, features_only=False, features=False, kd=False, kd_out=False, teacher=None, lmd=1, criterion_kd=torch.nn.MSELoss()):
+                      return_times=False, features_only=False, features=False, 
+                      kd=False, kd_out=False, teacher=None, lmd=1, criterion_kd=torch.nn.MSELoss(),
+                      roma_model=None):
     view1, view2 = batch
     for view in batch:
         for name in 'img pts3d valid_mask camera_pose camera_intrinsics F_matrix corres'.split():  # pseudo_focal
@@ -91,6 +96,27 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
             loss_tot += loss_kd * lmd
             
         loss_dict['kd'] = loss_kd.item()
+        loss = (loss_tot, loss_dict)
+
+    if roma_model is not None:
+        with torch.no_grad():
+            renorm_img1 = (view1['img'] * 0.5 + 0.5 - ROMA_MEAN.to(device)) / ROMA_STD.to(device)
+            renorm_img2 = (view2['img'] * 0.5 + 0.5 - ROMA_MEAN.to(device)) / ROMA_STD.to(device)
+            warp, certainty = roma_model.module.match(renorm_img1, renorm_img2, batched=True, device=device)
+            # out, valid = roma_model.sample(warp, certainty) # THIS DOES NOT WORK WITH BATCHES
+            warp, certainty = warp.reshape(-1, 2*SIZE*SIZE, 4), certainty.reshape(-1, 2*SIZE*SIZE)
+            idxs = torch.topk(certainty, 1000, dim=-1).indices
+            certainty = certainty.gather(-1, idxs)
+            warp = warp.gather(-2, idxs.unsqueeze(-1).expand(-1, -1, 4))
+            kptsA, kptsB = roma_model.module.to_pixel_coordinates(warp, SIZE, SIZE, SIZE, SIZE)
+            kptsA, kptsB = kptsA.type(torch.int64), kptsB.type(torch.int64)
+
+        p1 = outs[0]['pts3d'].gather(1, kptsB.unsqueeze(-1).expand(-1, -1, -1, 3))
+        p2 = outs[1]['pts3d_in_other_view'].gather(1, kptsA.unsqueeze(-1).expand(-1, -1, -1, 3))
+
+        loss_dict['roma_mse'] = ((p1 - p2)**2).mean()
+        loss_dict['roma_mae'] = ((p1 - p2).abs()).mean()
+        loss_tot += loss_dict['roma_mse'] * lmd
         loss = (loss_tot, loss_dict)
 
     result = dict(view1=view1, view2=view2, pred1=pred1, pred2=pred2, loss=loss)

@@ -21,7 +21,7 @@ from dust3r.image_pairs import make_pairs
 from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
 from dust3r.utils.device import to_numpy, to_cpu, collate_with_cat
 import open3d as o3d
-
+from RoMa.roma import roma_outdoor
 
 TEST_DATA = "Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
 TEST_DATA += " + ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
@@ -37,6 +37,7 @@ TEST_CRITERION = "ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd=True), alpha=0.2)
 TEST_DIR = 'test'
 TEST_DATASETS = ['Co3D', 'ScanNet++', 'DL3DV-10K']
 STUDENT = True
+SIZE = 224
 
 device = 'cuda:7'
 batch_size = 1
@@ -81,6 +82,8 @@ def main(args):
     test_criterion = eval(args.test_criterion or args.criterion).to(device)
     model.to(device)
 
+    roma_model = roma_outdoor(device=device, coarse_res=SIZE, upsample_res=SIZE)
+
     for d in TEST_DATASETS:
         data_path = f'{TEST_DIR}/{d}'
         for scene in os.listdir(data_path):
@@ -89,18 +92,29 @@ def main(args):
             img_path = f'{data_path}/{scene}/'
             print(img_path)
             # load_images can take a list of images or a directory
-            images = load_images(img_path, size=512)
+            images = load_images(img_path, size=SIZE)
+            images_pil = load_images(img_path, size=SIZE, return_pil=True)
+            H, W = images[0]['img'].shape[-2:]
             pairs = make_pairs(images, scene_graph='complete', prefilter=None, symmetrize=True)
 
             with torch.no_grad():
                 result = loss_of_one_batch(collate_with_cat(pairs), model, test_criterion, device,
                                         symmetrize_batch=True, features=True,
                                         kd=args.kd, kd_out=args.kd_out, teacher=teacher, lmd=args.lmd)
+
+                warp, certainty = roma_model.match(images_pil[0]['img'], images_pil[1]['img'], device=device)
+                out, valid = roma_model.sample(warp, certainty)
+                kptsA, kptsB = roma_model.to_pixel_coordinates(out, H, W, H, W)
+                kptsA, kptsB = kptsA.cpu().numpy().astype('int'), kptsB.cpu().numpy().astype('int')
                 
             result = to_cpu(result)
             loss_value, loss_details = result['loss']  # criterion returns two values
             loss_details['loss'] = loss_value.item()
             print(f"Details: {loss_details}")
+
+            p1 = result['pred1']['pts3d'][0, kptsB[:,0], kptsB[:,1]]
+            p2 = result['pred2']['pts3d_in_other_view'][0, kptsA[:,0], kptsA[:,1]]
+            print('RoMa Loss: MAE=', (p1 - p2).abs().mean().numpy(), 'MSE=', ((p1 - p2)**2).mean().numpy())
 
             scene = global_aligner(result, device=device, mode=GlobalAlignerMode.PointCloudOptimizer)
             _ = scene.compute_global_alignment(init="mst", niter=niter, schedule=schedule, lr=lr)
@@ -136,7 +150,7 @@ def load_pretrained(model_kd, teacher_path, model_kd_path, device):
     ckpt = torch.load(model_kd_path, map_location=device)
     try:
         print(model_kd.load_state_dict(ckpt['model'], strict=True))
-        args.start_epoch = ckpt['epoch']
+        # args.start_epoch = ckpt['epoch']
     except:
         print(model_kd.load_state_dict(ckpt, strict=True))
     del ckpt  # in case it occupies memory

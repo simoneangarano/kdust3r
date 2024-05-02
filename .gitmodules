@@ -1,3 +1,7 @@
 [submodule "croco"]
 	path = croco
 	url = https://github.com/naver/croco
+
+[submodule "RoMa"]
+	path = RoMa
+	url = https://github.com/Parskatt/RoMa.git

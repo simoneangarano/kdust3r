@@ -17,7 +17,9 @@ from dust3r.losses import *  # noqa: F401, needed when loading the model
 from dust3r.inference import loss_of_one_batch, load_model
 import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa
+from RoMa.roma import roma_outdoor
 
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 TEST_DATA = "Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
 TEST_DATA += " + ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
@@ -92,6 +94,8 @@ def main(args):
     # model and criterion
     teacher, model = load_pretrained(args.model, args.teacher_path, args.ckpt, device)
 
+    roma_model = roma_outdoor(device=device, coarse_res=224, upsample_res=224)
+
     print(f'>> Creating test criterion = {args.test_criterion or args.train_criterion}')
     test_criterion = eval(args.test_criterion or args.criterion).to(device)
 
@@ -114,12 +118,15 @@ def main(args):
         print(test_name)
         test_one_epoch(model, test_criterion, testset,
                        device, 0, log_writer=log_writer, args=args, prefix=test_name,
-                       kd=args.kd, teacher=teacher, features=args.kd, curr_step=train_stats['train_iter'])
+                       kd=args.kd, teacher=teacher, features=args.kd, 
+                       curr_step=train_stats['train_iter'], roma_model=roma_model)
         
 @torch.no_grad()
 def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                    data_loader: Sized, device: torch.device, epoch: int,
-                   args, log_writer=None, prefix='test', kd=False, teacher=None, features=False, curr_step=0):
+                   args, log_writer=None, prefix='test', 
+                   kd=False, teacher=None, features=False, curr_step=0,
+                   roma_model=None):
                     
     model.eval()
     metric_logger = misc.MetricLogger(delimiter="  ")
@@ -133,8 +140,9 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     for _, batch in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
         loss_tuple = loss_of_one_batch(batch, model, criterion, device,
-                                       symmetrize_batch=True, features=features,
-                                       ret='loss', kd=kd, kd_out=args.kd_out, teacher=teacher, lmd=args.lmd)
+                                       symmetrize_batch=True, features=features, ret='loss', 
+                                       kd=kd, kd_out=args.kd_out, teacher=teacher, lmd=args.lmd,
+                                       roma_model=roma_model)
         loss_value, loss_details = loss_tuple  # criterion returns two values
         metric_logger.update(loss=float(loss_value), **loss_details)
 

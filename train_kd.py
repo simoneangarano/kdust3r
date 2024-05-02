@@ -25,8 +25,9 @@ from dust3r.inference import loss_of_one_batch, load_model
 import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa
 from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler  # noqa
+from RoMa.roma import roma_outdoor
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "7"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"
 
 TRAIN_DATA = "100000 @ Co3d(split='train', ROOT='/ssd1/wenyan/co3d_2_cat_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=True)"
 TRAIN_DATA += "+ 100000 @ ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=True)"
@@ -98,17 +99,16 @@ def get_args_parser():
     parser.add_argument('--kd', default=True, action='store_true', help="knowledge distillation (features)")
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
     parser.add_argument('--teacher_path', default=CKPT, type=str, help="path to the teacher model")
-
     parser.add_argument('--warmup_epochs', type=int, default=0, metavar='N', help='epochs to warmup LR')
 
-
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='./log//', type=str, help="path where to save the output")
+    parser.add_argument('--output_dir', default='./log/roma/', type=str, help="path where to save the output")
     parser.add_argument('--cuda', default=-1, type=int, help="cuda device")
-    parser.add_argument('--pretrained', default=True, help='path of a starting checkpoint') # CKPT_KD
-    parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/train_2/checkpoint-best.pth', type=str, help="resume from checkpoint") # 'log/train_10_1%/checkpoint-1.pth'
+    parser.add_argument('--pretrained', default=False, help='path of a starting checkpoint') # CKPT_KD
+    parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint") # 'log/train_10_1%/checkpoint-1.pth'
     parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
     parser.add_argument('--accum_iter', default=1, type=int, help="Accumulate gradient iterations")
+    parser.add_argument('--roma', default=True, action='store_true', help="Use RoMa")
 
     return parser
 
@@ -148,11 +148,13 @@ def main(args):
     else:
         teacher, model = build_model_enc_dec(args.model, device, args)
 
+    if args.roma:
+        roma_model = roma_outdoor(device=device, coarse_res=224, upsample_res=224)
+    else:
+        roma_model = None
 
     train_criterion = eval(args.train_criterion).to(device)
     test_criterion = eval(args.test_criterion or args.criterion).to(device)
-
-    model.to(device)
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
     if args.lr is None:  # only base_lr is specified
@@ -167,6 +169,9 @@ def main(args):
             model, device_ids=[args.gpu], static_graph=True)
         model_without_ddp = model.module
         train_modules = [model_without_ddp.patch_embed, model_without_ddp.mask_generator, model_without_ddp.rope, model_without_ddp.enc_blocks, model_without_ddp.enc_norm]
+
+        if args.roma:
+            roma_model = torch.nn.parallel.DistributedDataParallel(roma_model, device_ids=[args.gpu], static_graph=True)
 
     else:
         model_without_ddp = model
@@ -225,7 +230,7 @@ def main(args):
             for test_name, testset in data_loader_test.items():
                 stats = test_one_epoch(model_without_ddp, test_criterion, testset,
                                        device, epoch, log_writer=log_writer, args=args, prefix=test_name,
-                                       teacher=teacher, curr_step=train_stats['train_iter'])
+                                       teacher=teacher, roma_model=roma_model, curr_step=train_stats['train_iter'])
                 test_stats[test_name] = stats
 
             # Save best of all
@@ -248,7 +253,7 @@ def main(args):
         train_stats = train_one_epoch(
             model, train_criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
-            log_writer=log_writer, teacher=teacher,
+            log_writer=log_writer, teacher=teacher, roma_model=roma_model,
             args=args, train_params=train_params, data_loader_test=data_loader_test,
             test_criterion=test_criterion, best_so_far=best_so_far)
 
@@ -289,7 +294,7 @@ def build_dataset(dataset, batch_size, num_workers, test=False):
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Sized, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, loss_scaler, args, teacher=None,
+                    device: torch.device, epoch: int, loss_scaler, args, teacher=None, roma_model=None,
                     log_writer=None, train_params=None, data_loader_test=None, test_criterion=None, best_so_far=inf):
     assert torch.backends.cuda.matmul.allow_tf32 == True
     model_without_ddp = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
@@ -316,7 +321,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         loss_tuple = loss_of_one_batch(batch, model, criterion, device,
                                        symmetrize_batch=True, features=args.kd,
                                        use_amp=bool(args.amp), ret='loss', kd=args.kd, kd_out=args.kd_out,
-                                       teacher=teacher, lmd=args.lmd)
+                                       teacher=teacher, lmd=args.lmd, roma_model=roma_model)
         loss, loss_details = loss_tuple  # criterion returns two values
         loss_value = float(loss)
 
@@ -360,7 +365,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 print(test_name)
                 stats = test_one_epoch(model_without_ddp, test_criterion, testset,
                                        device, epoch, log_writer=log_writer, args=args, prefix=test_name,
-                                       teacher=teacher, curr_step=epoch_1000x)
+                                       teacher=teacher, roma_model=roma_model, curr_step=epoch_1000x)
                 test_stats[test_name] = stats
 
             # Save best of all
@@ -383,7 +388,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 @torch.no_grad()
 def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                    data_loader: Sized, device: torch.device, epoch: int,
-                   args, log_writer=None, prefix='test', teacher=None, curr_step=0):
+                   args, log_writer=None, prefix='test', 
+                   teacher=None, roma_model=None, curr_step=0):
                     
     model.eval()
     metric_logger = misc.MetricLogger(delimiter="  ")
@@ -398,7 +404,8 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     for _, batch in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
         loss_tuple = loss_of_one_batch(batch, model, criterion, device,
                                        symmetrize_batch=True, features=args.kd,
-                                       use_amp=bool(args.amp), ret='loss', kd=args.kd, kd_out=args.kd_out,
+                                       use_amp=bool(args.amp), ret='loss', 
+                                       kd=args.kd, kd_out=args.kd_out, roma_model=roma_model,
                                        teacher=teacher, lmd=args.lmd)
         loss_value, loss_details = loss_tuple  # criterion returns two values
         metric_logger.update(loss=float(loss_value), **loss_details)
