@@ -102,7 +102,7 @@ def get_args_parser():
     parser.add_argument('--warmup_epochs', type=int, default=0, metavar='N', help='epochs to warmup LR')
 
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='./log/roma/', type=str, help="path where to save the output")
+    parser.add_argument('--output_dir', default='./log/roma_thr/', type=str, help="path where to save the output")
     parser.add_argument('--cuda', default=-1, type=int, help="cuda device")
     parser.add_argument('--pretrained', default=False, help='path of a starting checkpoint') # CKPT_KD
     parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint") # 'log/train_10_1%/checkpoint-1.pth'
@@ -170,8 +170,8 @@ def main(args):
         model_without_ddp = model.module
         train_modules = [model_without_ddp.patch_embed, model_without_ddp.mask_generator, model_without_ddp.rope, model_without_ddp.enc_blocks, model_without_ddp.enc_norm]
 
-        if args.roma:
-            roma_model = torch.nn.parallel.DistributedDataParallel(roma_model, device_ids=[args.gpu], static_graph=True)
+        # if args.roma:
+        #     roma_model = torch.nn.parallel.DistributedDataParallel(roma_model, device_ids=[args.gpu], static_graph=True)
 
     else:
         model_without_ddp = model

@@ -92,7 +92,7 @@ def main(args):
                         for dataset in args.test_dataset.split('+')}
 
     # model and criterion
-    teacher, model = load_pretrained(args.model, args.teacher_path, args.ckpt, device)
+    teacher, model = load_pretrained(args, device)
 
     roma_model = roma_outdoor(device=device, coarse_res=224, upsample_res=224)
 
@@ -170,19 +170,19 @@ def build_dataset(dataset, batch_size, num_workers, test=False):
     return loader
 
 
-def load_pretrained(model_kd, teacher_path, model_kd_path, device):
-    teacher = load_model(teacher_path, device)
+def load_pretrained(args, device):
+    teacher = load_model(args.teacher_path, device)
     teacher.eval()
 
     model = deepcopy(teacher)
     model.to(device)
     model.eval()
 
-    model_kd = eval(model_kd)
+    model_kd = eval(args.model)
     model_kd.to(device)
     model_kd.eval()
 
-    ckpt = torch.load(model_kd_path, map_location=device)
+    ckpt = torch.load(args.ckpt, map_location=device)
     try:
         print(model_kd.load_state_dict(ckpt['model'], strict=True))
         args.start_epoch = ckpt['epoch']
