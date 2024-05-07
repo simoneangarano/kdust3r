@@ -30,6 +30,10 @@ TEST_DATA += " + DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K',
 MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
             output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
             enc_embed_dim=384, enc_depth=12, enc_num_heads=6, dec_embed_dim=768, dec_depth=12, dec_num_heads=12, adapter=True)"
+MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
+            output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
+            enc_embed_dim=384, enc_depth=12, enc_num_heads=6, dec_embed_dim=192, dec_depth=12, dec_num_heads=3, adapter=True)" # TinyDecoder
+
 CKPT = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
 CKPT_KD = None # "checkpoints/DUSt3R_ViTSmall_BaseDecoder_512_dpt_kd.pth"
 TEST_CRITERION = "ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd=True), alpha=0.2) + Regr3D_ScaleShiftInv(L21, gt_scale=True, kd=True)"
@@ -54,10 +58,11 @@ def get_args_parser():
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
     parser.add_argument('--output_dir', default='./log/train/', type=str, help="path where to save the output")
     parser.add_argument('--cuda', default=7, type=int, help="cuda device")
-    parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/train_2/checkpoint-best.pth', type=str, help="resume from checkpoint") # "log/ckpt/iter_24750.pth"
+    parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/roma_decoder_2/checkpoint-best.pth', type=str, help="resume from checkpoint") # "log/ckpt/iter_24750.pth"
     parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
     parser.add_argument('--kd', default=True, type=bool)
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
+    parser.add_argument('--encoder_only', default=False, action='store_true', help="use only the encoder")
 
     return parser
 
@@ -82,8 +87,6 @@ def main(args):
     test_criterion = eval(args.test_criterion or args.criterion).to(device)
     model.to(device)
 
-    roma_model = roma_outdoor(device=device, coarse_res=SIZE, upsample_res=SIZE)
-
     for d in TEST_DATASETS:
         data_path = f'{TEST_DIR}/{d}'
         for scene in os.listdir(data_path):
@@ -101,20 +104,11 @@ def main(args):
                 result = loss_of_one_batch(collate_with_cat(pairs), model, test_criterion, device,
                                         symmetrize_batch=True, features=True,
                                         kd=args.kd, kd_out=args.kd_out, teacher=teacher, lmd=args.lmd)
-
-                warp, certainty = roma_model.match(images_pil[0]['img'], images_pil[1]['img'], device=device)
-                out, valid = roma_model.sample(warp, certainty)
-                kptsA, kptsB = roma_model.to_pixel_coordinates(out, H, W, H, W)
-                kptsA, kptsB = kptsA.cpu().numpy().astype('int'), kptsB.cpu().numpy().astype('int')
                 
             result = to_cpu(result)
             loss_value, loss_details = result['loss']  # criterion returns two values
             loss_details['loss'] = loss_value.item()
             print(f"Details: {loss_details}")
-
-            p1 = result['pred1']['pts3d'][0, kptsB[:,0], kptsB[:,1]]
-            p2 = result['pred2']['pts3d_in_other_view'][0, kptsA[:,0], kptsA[:,1]]
-            print('RoMa Loss: MAE=', (p1 - p2).abs().mean().numpy(), 'MSE=', ((p1 - p2)**2).mean().numpy())
 
             scene = global_aligner(result, device=device, mode=GlobalAlignerMode.PointCloudOptimizer)
             _ = scene.compute_global_alignment(init="mst", niter=niter, schedule=schedule, lr=lr)
@@ -155,12 +149,15 @@ def load_pretrained(model_kd, teacher_path, model_kd_path, device):
         print(model_kd.load_state_dict(ckpt, strict=True))
     del ckpt  # in case it occupies memory
 
-    model.patch_embed = deepcopy(model_kd.patch_embed)
-    model.mask_generator = deepcopy(model_kd.mask_generator)
-    model.rope = deepcopy(model_kd.rope)
-    model.enc_blocks = deepcopy(model_kd.enc_blocks)
-    model.enc_norm = deepcopy(model_kd.enc_norm)
-    model.adapter = deepcopy(model_kd.adapter)
+    if args.encoder_only:
+        model.patch_embed = deepcopy(model_kd.patch_embed)
+        model.mask_generator = deepcopy(model_kd.mask_generator)
+        model.rope = deepcopy(model_kd.rope)
+        model.enc_blocks = deepcopy(model_kd.enc_blocks)
+        model.enc_norm = deepcopy(model_kd.enc_norm)
+        model.adapter = deepcopy(model_kd.adapter)
+    else:
+        model = model_kd
 
     return teacher, model
 

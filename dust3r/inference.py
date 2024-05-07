@@ -82,6 +82,8 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
 
         if kd_out:
             teach1, teach2 = teacher_outs
+            teach1['img'] = view1['img']
+            teach2['img'] = view2['img']
             # loss is supposed to be symmetric
             with torch.cuda.amp.autocast(enabled=False):
                 loss = criterion(teach1, teach2, pred1, pred2) if criterion is not None else None
@@ -99,34 +101,7 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
         loss = (loss_tot, loss_dict)
 
     if roma_model is not None:
-        renorm_img1 = (view1['img'] * 0.5 + 0.5 - ROMA_MEAN.to(device)) / ROMA_STD.to(device)  
-        with torch.no_grad():
-            renorm_img2 = (view2['img'] * 0.5 + 0.5 - ROMA_MEAN.to(device)) / ROMA_STD.to(device)
-        warp, certainty = roma_model.match(renorm_img1, renorm_img2, batched=True, device=device)
-        warp, certainty = warp.reshape(-1, 2*H*W, 4), certainty.reshape(-1, 2*H*W)
-        kptsA, kptsB = roma_model.to_pixel_coordinates(warp, H, W, H, W)
-        kptsA, kptsB = kptsA.type(torch.int64), kptsB.type(torch.int64)
-        kptsA, kptsB = kptsA.reshape(-1,H,2*W,2), kptsB.reshape(-1,H,2*W,2)
-
-        kpts1 = kptsA[:,:,:W,:] # B, H, W, 2
-        kpts2 = kptsB[:,:,:W,:] # B, H, W, 2
-        pred1 = outs[0]['pts3d'] # -> kpts1
-        pred2 = outs[1]['pts3d_in_other_view'] # -> kpts2
-        kpts1, kpts2 = kpts1.reshape(-1,H*W,2), kpts2.reshape(-1,H*W,2)
-        kpts1_flat = torch.from_numpy(np.ravel_multi_index(kpts1.cpu().permute(-1,0,1).numpy(), (H, W), order='F')).to(device)
-        kpts2_flat = torch.from_numpy(np.ravel_multi_index(kpts2.cpu().permute(-1,0,1).numpy(), (H, W), order='F')).to(device)
-        pred1_flat = pred1.reshape(-1, H*W, 3)
-        pred2_flat = pred2.reshape(-1, H*W, 3)
-        p1 = pred1_flat.gather(1, kpts1_flat.unsqueeze(-1).expand(-1,-1,3))
-        p2 = pred2_flat.gather(1, kpts2_flat.unsqueeze(-1).expand(-1,-1,3))
-
-        cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > 0.5).float()
-        p1c = p1 * cert.unsqueeze(-1)
-        p2c = p2 * cert.unsqueeze(-1)
-
-        loss_dict['roma_mse'] = ((p1c - p2c)**2).mean() / cert.mean()
-        loss_dict['roma_mae'] = (p1c - p2c).abs().mean() / cert.mean()
-        loss_tot += loss_dict['roma_mse'] * 10000
+        loss_tot += loss_dict['roma_mse'] * 1000
         loss = (loss_tot, loss_dict)
 
     result = dict(view1=view1, view2=view2, pred1=pred1, pred2=pred2, loss=loss)

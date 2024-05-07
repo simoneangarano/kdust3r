@@ -7,11 +7,16 @@
 from copy import copy, deepcopy
 import torch
 import torch.nn as nn
+import numpy as np
 
 from dust3r.inference import get_pred_pts3d, find_opt_scaling
 from dust3r.utils.geometry import inv, geotrf, normalize_pointcloud
 from dust3r.utils.geometry import get_joint_pointcloud_depth, get_joint_pointcloud_center_scale
+from RoMa.roma import roma_outdoor
 
+H, W = 224, 224
+ROMA_MEAN = torch.Tensor([0.485, 0.456, 0.406])[:,None,None]
+ROMA_STD = torch.Tensor([0.229, 0.224, 0.225])[:,None,None]
 
 def Sum(*losses_and_masks):
     loss, mask = losses_and_masks[0]
@@ -148,11 +153,14 @@ class Regr3D (Criterion, MultiLoss):
               = (RT21 @ pred_D2) - (RT1^-1 @ RT2 @ D2)
     """
 
-    def __init__(self, criterion, norm_mode='avg_dis', gt_scale=False, kd=False):
+    def __init__(self, criterion, norm_mode='avg_dis', gt_scale=False, kd=False, roma_model=None):
         super().__init__(criterion)
         self.norm_mode = norm_mode
         self.gt_scale = gt_scale
         self.kd = kd
+        self.roma_model = roma_model
+        if self.roma_model is not None:
+            self.roma_model = roma_outdoor(device='cuda', coarse_res=224, upsample_res=224)
 
     def get_all_pts3d(self, gt1, gt2, pred1, pred2, dist_clip=None):
         valid1 = valid2 = torch.ones_like(gt1['pts3d'][..., 0], dtype=torch.bool)
@@ -196,6 +204,36 @@ class Regr3D (Criterion, MultiLoss):
         l2 = self.criterion(pred_pts2[mask2], gt_pts2[mask2])
         self_name = type(self).__name__
         details = {self_name+'_pts3d': float(l1.mean() + l2.mean())/2}
+        # roma loss
+        if self.roma_model is not None:
+            renorm_img1 = (gt1['img'] * 0.5 + 0.5 - ROMA_MEAN.to(gt_pts1.device)) / ROMA_STD.to(gt_pts1.device)  
+            with torch.no_grad():
+                renorm_img2 = (gt2['img'] * 0.5 + 0.5 - ROMA_MEAN.to(gt_pts1.device)) / ROMA_STD.to(gt_pts1.device)
+            warp, certainty = self.roma_model.match(renorm_img1, renorm_img2, batched=True, device=gt_pts1.device)
+            warp, certainty = warp.reshape(-1, 2*H*W, 4), certainty.reshape(-1, 2*H*W)
+            kptsA, kptsB = self.roma_model.to_pixel_coordinates(warp, H, W, H, W)
+            kptsA, kptsB = kptsA.type(torch.int64), kptsB.type(torch.int64)
+            kptsA, kptsB = kptsA.reshape(-1,H,2*W,2), kptsB.reshape(-1,H,2*W,2)
+
+            kpts1 = kptsA[:,:,:W,:] # B, H, W, 2
+            kpts2 = kptsB[:,:,:W,:] # B, H, W, 2
+            pred1 = pred1['pts3d'] # -> kpts1
+            pred2 = pred2['pts3d_in_other_view'] # -> kpts2
+            kpts1, kpts2 = kpts1.reshape(-1,H*W,2), kpts2.reshape(-1,H*W,2)
+            kpts1_flat = torch.from_numpy(np.ravel_multi_index(kpts1.cpu().permute(-1,0,1).numpy(), (H, W), order='F')).to(gt_pts1.device)
+            kpts2_flat = torch.from_numpy(np.ravel_multi_index(kpts2.cpu().permute(-1,0,1).numpy(), (H, W), order='F')).to(gt_pts1.device)
+            pred1_flat = pred1.reshape(-1, H*W, 3)
+            pred2_flat = pred2.reshape(-1, H*W, 3)
+            p1 = pred1_flat.gather(1, kpts1_flat.unsqueeze(-1).expand(-1,-1,3))
+            p2 = pred2_flat.gather(1, kpts2_flat.unsqueeze(-1).expand(-1,-1,3))
+
+            cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > 0.5).float()
+            p1c = p1 * cert.unsqueeze(-1)
+            p2c = p2 * cert.unsqueeze(-1)
+
+            details['roma_mse'] = (((p1c - p2c)**2).mean() / cert.mean()).item()
+            details['roma_mae'] = ((p1c - p2c).abs().mean() / cert.mean()).item()
+
         return Sum((l1, mask1), (l2, mask2)), (details | monitoring)
 
 
@@ -210,7 +248,7 @@ class ConfLoss (MultiLoss):
         alpha: hyperparameter
     """
 
-    def __init__(self, pixel_loss, alpha=1):
+    def __init__(self, pixel_loss, alpha=1, roma_model=None):
         super().__init__()
         assert alpha > 0
         self.alpha = alpha

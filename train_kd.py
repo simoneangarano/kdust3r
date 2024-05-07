@@ -25,33 +25,31 @@ from dust3r.inference import loss_of_one_batch, load_model
 import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa
 from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler  # noqa
-from RoMa.roma import roma_outdoor
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"
+os.environ['CUDA_VISIBLE_DEVICES'] = "4,5,6,7"
 
-TRAIN_DATA = "100000 @ Co3d(split='train', ROOT='/ssd1/wenyan/co3d_2_cat_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=True)"
-TRAIN_DATA += "+ 100000 @ ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=True)"
-TRAIN_DATA += "+ 100000 @ DL3DV(split='train', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=True)"
+TRAIN_DATA = "70000 @ Co3d(split='train', ROOT='/ssd1/wenyan/co3d_2_cat_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=False)"
+TRAIN_DATA += "+ 70000 @ ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=False)"
+TRAIN_DATA += "+ 70000 @ DL3DV(split='train', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=False)"
 # TRAIN_DATA += " + 70000 @ MegaDepth(split='train', ROOT='/ssd1/sa58728/dust3r/data/MegaDepth_v1', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=True)"
 
-TEST_DATA =  "1000 @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
-TEST_DATA += " + 1000 @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
-TEST_DATA += " + 1000 @ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
+TEST_DATA =  "1000 @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gaussian_frames=False)" # Unseen scenes
+TEST_DATA += " + 1000 @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gaussian_frames=False)" # Unseen scenes
+TEST_DATA += " + 1000 @ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gaussian_frames=False)" # Unseen scenes
 # TEST_DATA += " + 1000 @ MegaDepth(split='test', ROOT='/ssd1/sa58728/dust3r/data/MegaDepth_v1', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
 
-# TEST_DATA += " + 1000 @ Co3d(split='test', ROOT='/ssd1/wenyan/co3d_2_cat_processed', resolution=224, seed=777, gaussian_frames=True)" # Seen scenes
-
-MODEL = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
-         output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
-         enc_embed_dim=1024, enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12)"
+# MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
+#             output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
+#             enc_embed_dim=384, enc_depth=12, enc_num_heads=6, dec_embed_dim=768, dec_depth=12, dec_num_heads=12, adapter=True)" # BaseDecoder
 MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
             output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
-            enc_embed_dim=384, enc_depth=12, enc_num_heads=6, dec_embed_dim=768, dec_depth=12, dec_num_heads=12, adapter=True)"
+            enc_embed_dim=384, enc_depth=12, enc_num_heads=6, dec_embed_dim=192, dec_depth=12, dec_num_heads=3, adapter=True)" # TinyDecoder
+
 CKPT = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
 CKPT_KD = None # "checkpoints/DUSt3R_ViTSmall_BaseDecoder_512_dpt_kd.pth"
 
-TRAIN_CRITERION = "ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd=True), alpha=0.2)"
-TEST_CRITERION = "ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd=True), alpha=0.2) + Regr3D_ScaleShiftInv(L21, gt_scale=True, kd=True)"
+TRAIN_CRITERION = "ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd=True, roma_model=True), alpha=0.2)"
+TEST_CRITERION = "ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd=True), alpha=0.2, roma_model=True) + Regr3D_ScaleShiftInv(L21, gt_scale=True, kd=True, roma_model=True)"
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DUST3R training', add_help=False)
@@ -102,13 +100,14 @@ def get_args_parser():
     parser.add_argument('--warmup_epochs', type=int, default=0, metavar='N', help='epochs to warmup LR')
 
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='./log/roma_thr/', type=str, help="path where to save the output")
+    parser.add_argument('--output_dir', default='./log/new/', type=str, help="path where to save the output")
     parser.add_argument('--cuda', default=-1, type=int, help="cuda device")
     parser.add_argument('--pretrained', default=False, help='path of a starting checkpoint') # CKPT_KD
     parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint") # 'log/train_10_1%/checkpoint-1.pth'
     parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
     parser.add_argument('--accum_iter', default=1, type=int, help="Accumulate gradient iterations")
     parser.add_argument('--roma', default=True, action='store_true', help="Use RoMa")
+    parser.add_argument('--encoder_only', default=False, action='store_true', help="Train only the encoder")
 
     return parser
 
@@ -149,7 +148,7 @@ def main(args):
         teacher, model = build_model_enc_dec(args.model, device, args)
 
     if args.roma:
-        roma_model = roma_outdoor(device=device, coarse_res=224, upsample_res=224)
+        roma_model = True
     else:
         roma_model = None
 
@@ -182,7 +181,7 @@ def main(args):
     else:
         print("No adapter found in the model")
 
-    train_params = torch.nn.ParameterList([p for m in train_modules for p in m.parameters()])
+    train_params = torch.nn.ParameterList([p for m in train_modules for p in m.parameters()]) if args.encoder_only else model.parameters()
     optimizer = torch.optim.AdamW(train_params, lr=args.lr, weight_decay=args.weight_decay) #, betas=(0.9, 0.95))
     loss_scaler = NativeScaler()
 
@@ -438,15 +437,16 @@ def build_model_enc_dec(model_str, device, args):
     model.to(device)
     if args.ckpt:
         ckpt = torch.load(args.ckpt)
-        print(model.load_state_dict(ckpt['model'], strict=True))
+        model.load_state_dict(ckpt['model'], strict=True)
         args.start_epoch = ckpt['epoch']
         model.train()
 
-    module_list = ['decoder_embed', 'dec_blocks', 'dec_norm', 'dec_blocks2', 'downstream_head1', 'downstream_head2']
-    for m in module_list:
-        getattr(model, m).load_state_dict(getattr(teacher, m).state_dict(), strict=True)
-        getattr(model, m).eval()
-    model.mask_token = teacher.mask_token
+    if args.encoder_only:
+        module_list = ['decoder_embed', 'dec_blocks', 'dec_norm', 'dec_blocks2', 'downstream_head1', 'downstream_head2']
+        for m in module_list:
+            getattr(model, m).load_state_dict(getattr(teacher, m).state_dict(), strict=True)
+            getattr(model, m).eval()
+        model.mask_token = teacher.mask_token
 
     return teacher, model
 
@@ -471,30 +471,26 @@ def load_pretrained(model_kd, teacher_path, model_kd_path, device):
     teacher = load_model(teacher_path, device)
     teacher.eval()
 
-    model = deepcopy(teacher)
-    model.to(device)
-    model.eval()
-
     model_kd = eval(model_kd)
     model_kd.to(device)
     model_kd.eval()
 
     ckpt = torch.load(model_kd_path, map_location=device)
     try:
-        print(model_kd.load_state_dict(ckpt['model'], strict=True))
+        model_kd.load_state_dict(ckpt['model'], strict=True)
         args.start_epoch = ckpt['epoch']
     except:
-        print(model_kd.load_state_dict(ckpt, strict=True))
+        model_kd.load_state_dict(ckpt, strict=True)
     del ckpt  # in case it occupies memory
 
-    model.patch_embed = deepcopy(model_kd.patch_embed)
-    model.mask_generator = deepcopy(model_kd.mask_generator)
-    model.rope = deepcopy(model_kd.rope)
-    model.enc_blocks = deepcopy(model_kd.enc_blocks)
-    model.enc_norm = deepcopy(model_kd.enc_norm)
-    model.adapter = deepcopy(model_kd.adapter)
+    if args.encoder_only:
+        module_list = ['decoder_embed', 'dec_blocks', 'dec_norm', 'dec_blocks2', 'downstream_head1', 'downstream_head2']
+        for m in module_list:
+            getattr(model_kd, m).load_state_dict(getattr(teacher, m).state_dict(), strict=True)
+            getattr(model_kd, m).eval()
+        model_kd.mask_token = teacher.mask_token
 
-    return teacher, model
+    return teacher, model_kd
 
 
 def do_test_now(data_iter_step, accum_iter):
