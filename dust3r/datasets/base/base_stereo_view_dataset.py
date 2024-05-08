@@ -32,7 +32,7 @@ class BaseStereoViewDataset (EasyDataset):
                  transform=ImgNorm,
                  aug_crop=False,
                  seed=None,
-                 gaussian_frames=False):
+                 gauss_std=False):
         self.num_views = 2
         self.split = split
         self._set_resolutions(resolution)
@@ -43,7 +43,7 @@ class BaseStereoViewDataset (EasyDataset):
 
         self.aug_crop = aug_crop
         self.seed = seed
-        self.gaussian_frames = gaussian_frames
+        self.gauss_std = gauss_std
 
     def __len__(self):
         return len(self.scenes)

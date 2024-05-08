@@ -1,4 +1,4 @@
-train.py: train KD model
+train_kd.py: train KD model
 
 test.py: test KD model
 

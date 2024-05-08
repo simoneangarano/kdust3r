@@ -51,7 +51,7 @@ def make_batch_symmetric(batch):
 def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, use_amp=False, ret=None, 
                       return_times=False, features_only=False, features=False, 
                       kd=False, kd_out=False, teacher=None, lmd=1, criterion_kd=torch.nn.MSELoss(),
-                      roma_model=None):
+                      roma=None):
     view1, view2 = batch
     for view in batch:
         for name in 'img pts3d valid_mask camera_pose camera_intrinsics F_matrix corres'.split():  # pseudo_focal
@@ -100,7 +100,7 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
         loss_dict['kd'] = loss_kd.item()
         loss = (loss_tot, loss_dict)
 
-    if roma_model is not None:
+    if roma:
         loss_tot += loss_dict['roma_mse'] * 1000
         loss = (loss_tot, loss_dict)
 

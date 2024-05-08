@@ -35,7 +35,7 @@ class ScanNet(BaseStereoViewDataset):
             #                for k2, v2 in v.items()}
         self.scene_list = list(self.scenes.keys())
 
-        if self.gaussian_frames:
+        if self.gauss_std:
             self.combinations = [(i, j)
                                 for i, j in itertools.combinations(range(100), 2)
                                 if abs(i-j) == 3
@@ -69,7 +69,7 @@ class ScanNet(BaseStereoViewDataset):
         mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2)) # 50% chance
 
         views = []
-        if self.gaussian_frames:
+        if self.gauss_std:
             imgs_idxs = [max(0, min(im_idx + int(rng.normal(loc=0.0, scale=3)), last)) for im_idx in [im2_idx, im1_idx]]
         else:
             imgs_idxs = [max(0, min(im_idx + rng.integers(-4, 5), last)) for im_idx in [im2_idx, im1_idx]]

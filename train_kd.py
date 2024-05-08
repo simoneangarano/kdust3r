@@ -1,7 +1,6 @@
 import argparse
 import datetime
 import json
-import numpy as np
 import os
 import sys
 import time
@@ -11,7 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Sized
 from copy import deepcopy
-
+os.environ['CUDA_VISIBLE_DEVICES'] = "4,5,6,7"
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
@@ -21,170 +20,114 @@ from dust3r.model import AsymmetricCroCo3DStereo, inf  # noqa: F401, needed when
 from dust3r.datasets import get_data_loader  # noqa
 from dust3r.losses import *  # noqa: F401, needed when loading the model
 from dust3r.inference import loss_of_one_batch, load_model
-
 import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa
 from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler  # noqa
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "4,5,6,7"
-
-TRAIN_DATA = "70000 @ Co3d(split='train', ROOT='/ssd1/wenyan/co3d_2_cat_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=False)"
-TRAIN_DATA += "+ 70000 @ ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=False)"
-TRAIN_DATA += "+ 70000 @ DL3DV(split='train', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=False)"
-# TRAIN_DATA += " + 70000 @ MegaDepth(split='train', ROOT='/ssd1/sa58728/dust3r/data/MegaDepth_v1', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gaussian_frames=True)"
-
-TEST_DATA =  "1000 @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gaussian_frames=False)" # Unseen scenes
-TEST_DATA += " + 1000 @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gaussian_frames=False)" # Unseen scenes
-TEST_DATA += " + 1000 @ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gaussian_frames=False)" # Unseen scenes
-# TEST_DATA += " + 1000 @ MegaDepth(split='test', ROOT='/ssd1/sa58728/dust3r/data/MegaDepth_v1', resolution=224, seed=777, gaussian_frames=True)" # Unseen scenes
-
-# MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
-#             output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
-#             enc_embed_dim=384, enc_depth=12, enc_num_heads=6, dec_embed_dim=768, dec_depth=12, dec_num_heads=12, adapter=True)" # BaseDecoder
-MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
-            output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
-            enc_embed_dim=384, enc_depth=12, enc_num_heads=6, dec_embed_dim=192, dec_depth=12, dec_num_heads=3, adapter=True)" # TinyDecoder
-
-CKPT = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
-CKPT_KD = None # "checkpoints/DUSt3R_ViTSmall_BaseDecoder_512_dpt_kd.pth"
-
-TRAIN_CRITERION = "ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd=True, roma_model=True), alpha=0.2)"
-TEST_CRITERION = "ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd=True), alpha=0.2, roma_model=True) + Regr3D_ScaleShiftInv(L21, gt_scale=True, kd=True, roma_model=True)"
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DUST3R training', add_help=False)
-    # model and criterion
-    parser.add_argument('--model', default=MODEL_KD,
-                        type=str, help="string containing the model to build")
-    parser.add_argument('--train_criterion', default=TRAIN_CRITERION,
-                        type=str, help="train criterion")
-    parser.add_argument('--test_criterion', default=TEST_CRITERION, type=str, help="test criterion")
-
-    # dataset
-    parser.add_argument('--train_dataset', default=TRAIN_DATA, type=str, help="training set")
-    parser.add_argument('--test_dataset', default=TEST_DATA, type=str, help="testing set")
-
     # training
+    parser.add_argument('--teacher_ckpt', default="checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth", type=str, help="path to the teacher model")
+    parser.add_argument('--resume', default=None, help='resume from checkpoint')
+    parser.add_argument('--deterministic', default=False, type=bool)
     parser.add_argument('--seed', default=777, type=int, help="Random seed")
-    parser.add_argument('--epochs', default=100, type=int, help="Maximum number of epochs for the scheduler")
-
+    parser.add_argument('--epochs', default=10, type=int, help="Maximum number of epochs for the scheduler")
     parser.add_argument('--weight_decay', type=float, default=0.00005, help="weight decay (default: 0.05)")
     parser.add_argument('--lr', type=float, default=0.0001, metavar='LR', help='learning rate (absolute lr)')
-    parser.add_argument('--blr', type=float, default=0.00015, metavar='LR',
-                        help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
-    parser.add_argument('--min_lr', type=float, default=1e-6, metavar='LR',
-                        help='lower lr bound for cyclic schedulers that hit 0')
-
-    parser.add_argument('--amp', type=int, default=0,
-                        choices=[0, 1], help="Use Automatic Mixed Precision for pretraining")
-
+    parser.add_argument('--min_lr', type=float, default=1e-6, metavar='LR', help='lower lr bound for cyclic schedulers that hit 0')
+    parser.add_argument('--amp', type=int, default=0, choices=[0, 1], help="Use Automatic Mixed Precision for pretraining")
+    parser.add_argument('--warmup_epochs', type=int, default=0, metavar='N', help='epochs to warmup LR')
+    parser.add_argument('--test', default=False, action='store_true', help="test only flag")
+    parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
+    parser.add_argument('--accum_iter', default=1, type=int, help="Accumulate gradient iterations")
     # others
+    parser.add_argument('--cuda', default=-1, type=int, help="cuda device")
     parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--world_size', default=1, type=int, help='number of distributed processes')
     parser.add_argument('--local_rank', default=-1, type=int)
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
-
     parser.add_argument('--eval_freq', type=int, default=1, help='Test loss evaluation frequency')
-    parser.add_argument('--save_freq', default=1, type=int,
-                        help='frequence (number of epochs) to save checkpoint in checkpoint-last.pth')
-    parser.add_argument('--keep_freq', default=1, type=int,
-                        help='frequence (number of epochs) to save checkpoint in checkpoint-%d.pth')
-    parser.add_argument('--print_freq', default=100, type=int,
-                        help='frequence (number of iterations) to print infos while training')
-    
-    # test
-    parser.add_argument('--test', default=False, action='store_true', help="test only flag")
+    parser.add_argument('--save_freq', default=1, type=int, help='frequence (number of epochs) to save checkpoint in checkpoint-last.pth')
+    parser.add_argument('--keep_freq', default=1, type=int, help='frequence (number of epochs) to save checkpoint in checkpoint-%d.pth')
+    parser.add_argument('--print_freq', default=100, type=int, help='frequence (number of iterations) to print infos while training')
+    # kd
     parser.add_argument('--kd', default=True, action='store_true', help="knowledge distillation (features)")
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
-    parser.add_argument('--teacher_path', default=CKPT, type=str, help="path to the teacher model")
-    parser.add_argument('--warmup_epochs', type=int, default=0, metavar='N', help='epochs to warmup LR')
-
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='./log/new/', type=str, help="path where to save the output")
-    parser.add_argument('--cuda', default=-1, type=int, help="cuda device")
-    parser.add_argument('--pretrained', default=False, help='path of a starting checkpoint') # CKPT_KD
+    parser.add_argument('--output_dir', default='./log/gauss_9/', type=str, help="path where to save the output")
     parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint") # 'log/train_10_1%/checkpoint-1.pth'
-    parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
-    parser.add_argument('--accum_iter', default=1, type=int, help="Accumulate gradient iterations")
-    parser.add_argument('--roma', default=True, action='store_true', help="Use RoMa")
-    parser.add_argument('--encoder_only', default=False, action='store_true', help="Train only the encoder")
-
+    parser.add_argument('--roma', default=False, action='store_true', help="Use RoMa")
+    parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
+    parser.add_argument('--gauss_std', default=9, type=float, help="Gaussian noise standard deviation")
     return parser
 
 
 def main(args):
+    # SETUP
     misc.init_distributed_mode(args)
     global_rank = misc.get_rank()
-
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-
-    # auto resume
-    args.resume = None
-
     device = f"cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
+    if args.deterministic:
+        seed = args.seed
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        cudnn.deterministic = True
+        cudnn.benchmark = False
+    else:
+        cudnn.benchmark = True
 
-    # fix the seed
-    # seed = args.seed
-    # torch.manual_seed(seed)
-    # np.random.seed(seed)
-    # random.seed(seed)
-    cudnn.benchmark = True
-    # cudnn.deterministic = True
+    # DATASET
+    N, N_TEST = 100000, 1000
+    TRAIN_DATA = f"{N} @ Co3d(split='train', ROOT='/ssd1/wenyan/co3d_2_cat_processed', \
+        aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
+    TRAIN_DATA += f"+ {N} @ ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', \
+        aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
+    TRAIN_DATA += f"+ {N} @ DL3DV(split='train', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', \
+        aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
+    TEST_DATA =  f"{N_TEST} @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
+    TEST_DATA += f" + {N_TEST} @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
+    TEST_DATA += f" + {N_TEST} @ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std})"
 
-    # training dataset and loader
-    print('Building train dataset {:s}'.format(args.train_dataset))
-    #  dataset and loader
-    data_loader_train = build_dataset(args.train_dataset, args.batch_size, args.num_workers, test=False)
-    print('Building test dataset {:s}'.format(args.train_dataset))
+    data_loader_train = build_dataset(TRAIN_DATA, args.batch_size, args.num_workers, test=False)
     data_loader_test = {dataset.split('(')[0]: build_dataset(dataset, args.batch_size, args.num_workers, test=True)
-                        for dataset in args.test_dataset.split('+')}
+                        for dataset in TEST_DATA.split('+')}
 
-    # model and criterion
-    if args.test or args.pretrained:
-        teacher, model = load_pretrained(args.model, args.teacher_path, args.ckpt, device)
+    # MODEL
+    if args.encoder_only:
+        model_dims = [384, 6, 768, 12]
     else:
-        teacher, model = build_model_enc_dec(args.model, device, args)
+        model_dims = [384, 6, 192, 3]
+    MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
+                output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
+                enc_embed_dim={}, enc_depth=12, enc_num_heads={}, dec_embed_dim={}, dec_depth=12, dec_num_heads={}, adapter=True)".format(*model_dims)
+    teacher, model = build_model_enc_dec(MODEL_KD, device, args)
 
-    if args.roma:
-        roma_model = True
-    else:
-        roma_model = None
-
-    train_criterion = eval(args.train_criterion).to(device)
-    test_criterion = eval(args.test_criterion or args.criterion).to(device)
-
-    eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
-    if args.lr is None:  # only base_lr is specified
-        args.lr = args.blr * eff_batch_size / 256
-    print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
-    print("actual lr: %.2e" % args.lr)
-    print("accumulate grad iterations: %d" % args.accum_iter)
-    print("effective batch size: %d" % eff_batch_size)
-
+    # CRITERION
+    TRAIN_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd}, roma={args.roma}), alpha=0.2)"
+    TEST_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd}), alpha=0.2, roma={args.roma}) + \
+                       Regr3D_ScaleShiftInv(L21, gt_scale=True, kd={args.kd}, roma={args.roma})"
+    train_criterion = eval(TRAIN_CRITERION).to(device)
+    test_criterion = eval(TEST_CRITERION).to(device)
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(
             model, device_ids=[args.gpu], static_graph=True)
         model_without_ddp = model.module
-        train_modules = [model_without_ddp.patch_embed, model_without_ddp.mask_generator, model_without_ddp.rope, model_without_ddp.enc_blocks, model_without_ddp.enc_norm]
-
-        # if args.roma:
-        #     roma_model = torch.nn.parallel.DistributedDataParallel(roma_model, device_ids=[args.gpu], static_graph=True)
-
     else:
         model_without_ddp = model
-        train_modules = [model_without_ddp.patch_embed, model_without_ddp.mask_generator, model_without_ddp.rope, model_without_ddp.enc_blocks, model_without_ddp.enc_norm]
-
+    train_modules = [model_without_ddp.patch_embed, model_without_ddp.mask_generator, model_without_ddp.rope, 
+                     model_without_ddp.enc_blocks, model_without_ddp.enc_norm]
     if hasattr(model_without_ddp, 'adapter') and model_without_ddp.adapter is not None:
         train_modules.append(model_without_ddp.adapter)
-    else:
-        print("No adapter found in the model")
-
     train_params = torch.nn.ParameterList([p for m in train_modules for p in m.parameters()]) if args.encoder_only else model.parameters()
-    optimizer = torch.optim.AdamW(train_params, lr=args.lr, weight_decay=args.weight_decay) #, betas=(0.9, 0.95))
+    optimizer = torch.optim.AdamW(train_params, lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.95))
     loss_scaler = NativeScaler()
 
+    # LOGGING
     def write_log_stats(epoch, train_stats, test_stats):
         if misc.is_main_process():
             if log_writer is not None:
@@ -203,8 +146,7 @@ def main(args):
         misc.save_model(args=args, model=model_without_ddp, optimizer=optimizer,
                         loss_scaler=loss_scaler, epoch=epoch, fname=fname, best_so_far=best_so_far)
 
-    best_so_far = misc.load_model(args=args, model=model_without_ddp,
-                                  optimizer=optimizer, loss_scaler=loss_scaler)
+    best_so_far = misc.load_model(args=args, model=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
     if best_so_far is None:
         best_so_far = float('inf')
     if global_rank == 0 and args.output_dir is not None:
@@ -212,6 +154,7 @@ def main(args):
     else:
         log_writer = None
 
+    # TRAINING
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     train_stats = test_stats = {'train_iter': 0}
@@ -229,17 +172,15 @@ def main(args):
             for test_name, testset in data_loader_test.items():
                 stats = test_one_epoch(model_without_ddp, test_criterion, testset,
                                        device, epoch, log_writer=log_writer, args=args, prefix=test_name,
-                                       teacher=teacher, roma_model=roma_model, curr_step=train_stats['train_iter'])
+                                       teacher=teacher, roma=args.roma, curr_step=train_stats['train_iter'])
                 test_stats[test_name] = stats
 
             # Save best of all
-            if stats['loss_med'] < best_so_far:
+            if stats['loss_med'] < best_so_far: ################################################################################################################
                 best_so_far = stats['loss_med']
                 new_best = True
 
-        # Save more stuff
         write_log_stats(epoch, train_stats, test_stats)
-
         if epoch > args.start_epoch:
             if args.keep_freq and epoch % args.keep_freq == 0:
                 save_model(epoch-1, str(epoch), best_so_far)
@@ -252,14 +193,13 @@ def main(args):
         train_stats = train_one_epoch(
             model, train_criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
-            log_writer=log_writer, teacher=teacher, roma_model=roma_model,
+            log_writer=log_writer, teacher=teacher, roma=args.roma,
             args=args, train_params=train_params, data_loader_test=data_loader_test,
             test_criterion=test_criterion, best_so_far=best_so_far)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
-
     save_final_model(args, args.epochs, model_without_ddp, best_so_far=best_so_far)
 
 
@@ -286,18 +226,16 @@ def build_dataset(dataset, batch_size, num_workers, test=False):
                              pin_mem=True,
                              shuffle=not (test),
                              drop_last=not (test))
-
     print(f"{split} dataset length: ", len(loader))
     return loader
 
 
-def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
-                    data_loader: Sized, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, loss_scaler, args, teacher=None, roma_model=None,
+def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module, data_loader: Sized, optimizer: torch.optim.Optimizer,
+                    device: torch.device, epoch: int, loss_scaler, args, teacher=None, roma=None,
                     log_writer=None, train_params=None, data_loader_test=None, test_criterion=None, best_so_far=inf):
     assert torch.backends.cuda.matmul.allow_tf32 == True
     model_without_ddp = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-    model = set_trainable(model)
+    model = set_trainable(model, args)
     metric_logger = misc.MetricLogger(delimiter=" ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.1e}\n>'))
     header = 'Epoch: [{}]'.format(epoch)
@@ -309,7 +247,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         data_loader.sampler.set_epoch(epoch)
 
     optimizer.zero_grad()
-
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
         epoch_f = epoch + data_iter_step / len(data_loader)
 
@@ -317,11 +254,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         if data_iter_step % accum_iter == 0:
             misc.adjust_learning_rate(optimizer, epoch_f, args)
 
-        loss_tuple = loss_of_one_batch(batch, model, criterion, device,
-                                       symmetrize_batch=True, features=args.kd,
+        loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=args.kd,
                                        use_amp=bool(args.amp), ret='loss', kd=args.kd, kd_out=args.kd_out,
-                                       teacher=teacher, lmd=args.lmd, roma_model=roma_model)
-        loss, loss_details = loss_tuple  # criterion returns two values
+                                       teacher=teacher, lmd=args.lmd, roma=roma)
+        loss, loss_details = loss_tuple 
         loss_value = float(loss)
 
         if not math.isfinite(loss_value):
@@ -333,24 +269,18 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     update_grad=(data_iter_step + 1) % accum_iter == 0)
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
-
         del loss
         del batch
 
         lr = optimizer.param_groups[0]["lr"]
-        # metric_logger.update(epoch=epoch_f)
         metric_logger.update(lr=lr)
         metric_logger.update(loss=loss_value, **loss_details)
 
         if (data_iter_step) % accum_iter == 0 and ((data_iter_step) % (accum_iter * args.print_freq)) == 0:
-            # loss_value_reduce = misc.all_reduce_mean(loss_value)  # MUST BE EXECUTED BY ALL NODES
             epoch_1000x = int(epoch * len(data_loader) + data_iter_step) // accum_iter
 
             if log_writer is None:
                 continue
-            """ We use epoch_1000x as the x-axis in tensorboard.
-            This calibrates different curves when batch size changes.
-            """
             log_writer.add_scalar('train_loss', loss_value, epoch_1000x)
             log_writer.add_scalar('train_lr', lr, epoch_1000x)
             log_writer.add_scalar('train_iter', epoch_1000x, epoch_1000x)
@@ -364,10 +294,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 print(test_name)
                 stats = test_one_epoch(model_without_ddp, test_criterion, testset,
                                        device, epoch, log_writer=log_writer, args=args, prefix=test_name,
-                                       teacher=teacher, roma_model=roma_model, curr_step=epoch_1000x)
+                                       teacher=teacher, roma=roma, curr_step=epoch_1000x)
                 test_stats[test_name] = stats
 
-            # Save best of all
+            # Save best of all ####################################################################################################################################
             if stats['loss_med'] < best_so_far:
                 best_so_far = stats['loss_med']
                 new_best = True
@@ -385,10 +315,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
-                   data_loader: Sized, device: torch.device, epoch: int,
-                   args, log_writer=None, prefix='test', 
-                   teacher=None, roma_model=None, curr_step=0):
+def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module, data_loader: Sized, device: torch.device, epoch: int,
+                   args, log_writer=None, prefix='test', teacher=None, roma=None, curr_step=0):
                     
     model.eval()
     metric_logger = misc.MetricLogger(delimiter="  ")
@@ -400,102 +328,74 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     if hasattr(data_loader, 'sampler') and hasattr(data_loader.sampler, 'set_epoch'):
         data_loader.sampler.set_epoch(epoch)
 
-    for _, batch in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
-        loss_tuple = loss_of_one_batch(batch, model, criterion, device,
-                                       symmetrize_batch=True, features=args.kd,
-                                       use_amp=bool(args.amp), ret='loss', 
-                                       kd=args.kd, kd_out=args.kd_out, roma_model=roma_model,
+    for _, batch in enumerate(data_loader):
+        loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=args.kd,
+                                       use_amp=bool(args.amp), ret='loss', kd=args.kd, kd_out=args.kd_out, roma=roma,
                                        teacher=teacher, lmd=args.lmd)
         loss_value, loss_details = loss_tuple  # criterion returns two values
         metric_logger.update(loss=float(loss_value), **loss_details)
 
-    # gather the stats from all processes
-    # metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
-
-    aggs = [('avg', 'global_avg'), ('med', 'median')]
+    aggs = [('avg', 'global_avg'), ('med', 'median')] ###############################################################################################
     results = {f'{k}_{tag}': getattr(meter, attr) for k, meter in metric_logger.meters.items() for tag, attr in aggs}
-
     epoch_1000x = curr_step
-
     for name, val in results.items():
         log_writer.add_scalar(prefix+'_'+name, val, epoch_1000x)
     return results
 
 
 def build_model_enc_dec(model_str, device, args):
-    teacher = load_model("checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth", device)
+
+    teacher = load_model(args.teacher_ckpt, device)
     teacher.eval()
-
-    if "x" in args.output_dir:
-        print("Using pretrained Dust3R")
-        model = load_model("checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth", device)
-    else:
-        print("Training from scratch")
-        model = eval(model_str)
-
+    
+    model = deepcopy(teacher)
     model.to(device)
+    model.eval()
+
+    model_kd = eval(model_str)
+    model_kd.to(device)
+    model_kd.eval()
+
     if args.ckpt:
         ckpt = torch.load(args.ckpt)
-        model.load_state_dict(ckpt['model'], strict=True)
+        model_kd.load_state_dict(ckpt['model'], strict=True)
         args.start_epoch = ckpt['epoch']
-        model.train()
+        model_kd.train()
 
     if args.encoder_only:
-        module_list = ['decoder_embed', 'dec_blocks', 'dec_norm', 'dec_blocks2', 'downstream_head1', 'downstream_head2']
-        for m in module_list:
-            getattr(model, m).load_state_dict(getattr(teacher, m).state_dict(), strict=True)
-            getattr(model, m).eval()
-        model.mask_token = teacher.mask_token
+        model.patch_embed = deepcopy(model_kd.patch_embed)
+        model.mask_generator = deepcopy(model_kd.mask_generator)
+        model.rope = deepcopy(model_kd.rope)
+        model.enc_blocks = deepcopy(model_kd.enc_blocks)
+        model.enc_norm = deepcopy(model_kd.enc_norm)
+        model.adapter = deepcopy(model_kd.adapter)
+    else:
+        model = model_kd
 
     return teacher, model
 
 
-def set_trainable(model):
+def set_trainable(model, args):
     model.train()
-    module_list = ['decoder_embed', 'dec_blocks', 'dec_norm', 'dec_blocks2', 'downstream_head1', 'downstream_head2']
-    for m in module_list:
-        if hasattr(model, m):
-            getattr(model, m).eval()
-        else:
-            getattr(model.module, m).eval()
-    if hasattr(model, 'mask_token'):
-        model.mask_token.requires_grad = False
-    else:
-        model.module.mask_token.requires_grad = False
-    return model
-
-
-def load_pretrained(model_kd, teacher_path, model_kd_path, device):
-    print("Loading student model from: ", model_kd_path)
-    teacher = load_model(teacher_path, device)
-    teacher.eval()
-
-    model_kd = eval(model_kd)
-    model_kd.to(device)
-    model_kd.eval()
-
-    ckpt = torch.load(model_kd_path, map_location=device)
-    try:
-        model_kd.load_state_dict(ckpt['model'], strict=True)
-        args.start_epoch = ckpt['epoch']
-    except:
-        model_kd.load_state_dict(ckpt, strict=True)
-    del ckpt  # in case it occupies memory
-
     if args.encoder_only:
         module_list = ['decoder_embed', 'dec_blocks', 'dec_norm', 'dec_blocks2', 'downstream_head1', 'downstream_head2']
         for m in module_list:
-            getattr(model_kd, m).load_state_dict(getattr(teacher, m).state_dict(), strict=True)
-            getattr(model_kd, m).eval()
-        model_kd.mask_token = teacher.mask_token
-
-    return teacher, model_kd
+            if hasattr(model, m):
+                getattr(model, m).eval()
+            else:
+                getattr(model.module, m).eval()
+        if hasattr(model, 'mask_token'):
+            model.mask_token.requires_grad = False
+        else:
+            model.module.mask_token.requires_grad = False
+    return model
 
 
 def do_test_now(data_iter_step, accum_iter):
     output = (data_iter_step) % accum_iter == 0 and ((data_iter_step) % (accum_iter * 2500)) == 0
     return output
+
 
 if __name__ == '__main__':
     args = get_args_parser()
