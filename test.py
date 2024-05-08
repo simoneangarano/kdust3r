@@ -31,7 +31,7 @@ def get_args_parser():
     parser.add_argument('--teacher_ckpt', default="checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth", type=str, help="path to the teacher model")
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
     parser.add_argument('--cuda', default=7, type=int, help="cuda device")
-    parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/roma_decoder_2/checkpoint-best.pth', type=str, help="resume from checkpoint")
+    parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/gauss_3/checkpoint-best.pth', type=str, help="resume from checkpoint")
     parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
     parser.add_argument('--kd', default=True, type=bool)
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
@@ -55,9 +55,9 @@ def main(args):
     cudnn.deterministic = True
 
     # DATA
-    TEST_DATA =  f"Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    TEST_DATA += f" + @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    TEST_DATA += f" + @ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std})"
+    TEST_DATA =  f"Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std}) "
+    TEST_DATA += f" + ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std}) "
+    TEST_DATA += f" + DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std}) "
 
     data_loader_test = {dataset.split('(')[0]: build_dataset(dataset, args.batch_size, args.num_workers, test=True)
                         for dataset in TEST_DATA.split('+')}
