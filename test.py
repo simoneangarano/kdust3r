@@ -31,12 +31,12 @@ def get_args_parser():
     parser.add_argument('--teacher_ckpt', default="checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth", type=str, help="path to the teacher model")
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
     parser.add_argument('--cuda', default=7, type=int, help="cuda device")
-    parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/roma_decoder_2/checkpoint-best.pth', type=str, help="resume from checkpoint") # "log/ckpt/iter_24750.pth"
+    parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/roma_decoder_2/checkpoint-best.pth', type=str, help="resume from checkpoint")
     parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
     parser.add_argument('--kd', default=True, type=bool)
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
     parser.add_argument('--roma', default=None, action='store_true', help="Use RoMa")
-    parser.add_argument('--encoder_only', default=False, action='store_true', help="Train only the encoder")
+    parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
     parser.add_argument('--gauss_std', default=3, type=float, help="Gaussian noise std")
 
     return parser

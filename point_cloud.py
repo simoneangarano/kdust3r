@@ -9,10 +9,10 @@ from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
 from dust3r.utils.device import to_numpy
 from dust3r.model import AsymmetricCroCo3DStereo, inf
 
-ENCODER_ONLY = True
-CKPT = f'log/train_2/checkpoint-best.pth' # "checkpoints/DUSt3R_ViTSmall_BaseDecoder_512_dpt_kd.pth"
-TEACHER_CKPT = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
-TEST_SUBSETS = ['co3d_test_1', 'co3d_test_2', 'croco', 'dtu'] # ['croco', 'dtu', 'co3d_test_1', 'co3d_test_2']
+ENCODER_ONLY = True # if True, use teacher's decoder and student's encoder
+CKPT = f'log/train_2_v2/checkpoint-best.pth' # student's checkpoint
+TEACHER_CKPT = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth" # teacher's checkpoint
+TEST_SUBSETS = ['co3d_test_1', 'co3d_test_2', 'croco', 'dtu'] # image pairs to test
 
 def main():
 
