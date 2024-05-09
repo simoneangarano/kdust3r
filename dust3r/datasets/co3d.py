@@ -10,7 +10,7 @@ import os.path as osp
 import json
 import itertools
 from collections import deque
-
+import random
 import cv2
 import numpy as np
 import torch
@@ -18,6 +18,7 @@ import torch
 from dust3r.datasets.base.base_stereo_view_dataset import BaseStereoViewDataset
 from dust3r.utils.image import imread_cv2
 
+random.seed(777)
 
 class Co3d(BaseStereoViewDataset):
     def __init__(self, mask_bg=True, features=False, *args, ROOT, **kwargs):
@@ -35,7 +36,7 @@ class Co3d(BaseStereoViewDataset):
                            for k2, v2 in v.items()}
         self.scene_list = list(self.scenes.keys())
 
-        if self.gauss_std:
+        if isinstance(self.gauss_std, tuple) or self.gauss_std > 0:
             self.combinations = [(i, j)
                                 for i, j in itertools.combinations(range(100), 2)
                                 if abs(i-j) == 3
@@ -69,8 +70,10 @@ class Co3d(BaseStereoViewDataset):
         mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2)) # 50% chance
 
         views = []
-        if self.gauss_std:
-            imgs_idxs = [max(0, min(im_idx + int(rng.normal(loc=0.0, scale=3)), last)) for im_idx in [im2_idx, im1_idx]]
+        if isinstance(self.gauss_std, tuple):
+            imgs_idxs = [max(0, min(im_idx + int(rng.normal(loc=0.0, scale=random.sample(self.gauss_std,1))), last)) for im_idx in [im2_idx, im1_idx]]
+        elif self.gauss_std > 0:
+            imgs_idxs = [max(0, min(im_idx + int(rng.normal(loc=0.0, scale=self.gauss_std)), last)) for im_idx in [im2_idx, im1_idx]]
         else:
             imgs_idxs = [max(0, min(im_idx + rng.integers(-4, 5), last)) for im_idx in [im2_idx, im1_idx]]
         imgs_idxs = deque(imgs_idxs)

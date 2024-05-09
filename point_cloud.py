@@ -10,13 +10,13 @@ from dust3r.utils.device import to_numpy
 from dust3r.model import AsymmetricCroCo3DStereo, inf
 
 ENCODER_ONLY = True # if True, use teacher's decoder and student's encoder
-CKPT = f'log/train_2_v2/checkpoint-best.pth' # student's checkpoint
+CKPT = f'log/train_v2_2/checkpoint-best.pth' # student's checkpoint
 TEACHER_CKPT = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth" # teacher's checkpoint
 TEST_SUBSETS = ['co3d_test_1', 'co3d_test_2', 'croco', 'dtu'] # image pairs to test
 
 def main():
 
-    device = 'cuda:6'
+    device = 'cpu'
     batch_size = 1
     schedule = 'cosine'
     lr = 0.01

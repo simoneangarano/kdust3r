@@ -141,3 +141,5 @@ utils/__pycache__/*
 pairs/
 test_pairs/
 x.py
+test/
+*.ipynb

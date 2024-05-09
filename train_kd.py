@@ -55,11 +55,12 @@ def get_args_parser():
     parser.add_argument('--kd', default=True, action='store_true', help="knowledge distillation (features)")
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='./log/gauss_9/', type=str, help="path where to save the output")
-    parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint") # 'log/train_10_1%/checkpoint-1.pth'
+    parser.add_argument('--output_dir', default='./log/gauss_1/', type=str, help="path where to save the output")
+    parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint")
     parser.add_argument('--roma', default=False, action='store_true', help="Use RoMa")
     parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
-    parser.add_argument('--gauss_std', default=9, type=float, help="Gaussian noise standard deviation")
+    parser.add_argument('--gauss_std', default=1, type=float, help="Gaussian noise standard deviation")
+    parser.add_argument('--gauss_std_test', default=(1,3,6,9), help="Gaussian noise standard deviation")
     return parser
 
 
@@ -89,9 +90,9 @@ def main(args):
         aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
     TRAIN_DATA += f"+ {N} @ DL3DV(split='train', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', \
         aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
-    TEST_DATA =  f"{N_TEST} @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    TEST_DATA += f" + {N_TEST} @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    TEST_DATA += f" + {N_TEST} @ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std})"
+    TEST_DATA =  f"{N_TEST} @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
+    TEST_DATA += f" + {N_TEST} @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
+    TEST_DATA += f" + {N_TEST} @ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
 
     data_loader_train = build_dataset(TRAIN_DATA, args.batch_size, args.num_workers, test=False)
     data_loader_test = {dataset.split('(')[0]: build_dataset(dataset, args.batch_size, args.num_workers, test=True)
@@ -176,8 +177,10 @@ def main(args):
                 test_stats[test_name] = stats
 
             # Save best of all
-            if stats['loss_med'] < best_so_far: ################################################################################################################
-                best_so_far = stats['loss_med']
+            loss_med = [stats['loss_med'] for stats in test_stats.values()]
+            loss_med = sum(loss_med) / len(loss_med)
+            if loss_med < best_so_far:
+                best_so_far = loss_med
                 new_best = True
 
         write_log_stats(epoch, train_stats, test_stats)
@@ -297,11 +300,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module, data_loa
                                        teacher=teacher, roma=roma, curr_step=epoch_1000x)
                 test_stats[test_name] = stats
 
-            # Save best of all ####################################################################################################################################
-            if stats['loss_med'] < best_so_far:
-                best_so_far = stats['loss_med']
+            # Save best of all 
+            loss_med = [stats['loss_med'] for stats in test_stats.values()]
+            loss_med = sum(loss_med) / len(loss_med)
+            if loss_med < best_so_far:
+                best_so_far = loss_med
                 new_best = True
-
             if new_best:
                 misc.save_model(args=args, model=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch-1, fname='best', best_so_far=best_so_far)
@@ -336,7 +340,7 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module, data_load
         metric_logger.update(loss=float(loss_value), **loss_details)
 
     print("Averaged stats:", metric_logger)
-    aggs = [('avg', 'global_avg'), ('med', 'median')] ###############################################################################################
+    aggs = [('avg', 'global_avg'), ('med', 'median')] 
     results = {f'{k}_{tag}': getattr(meter, attr) for k, meter in metric_logger.meters.items() for tag, attr in aggs}
     epoch_1000x = curr_step
     for name, val in results.items():

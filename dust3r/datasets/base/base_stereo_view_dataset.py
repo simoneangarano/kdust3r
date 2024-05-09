@@ -32,7 +32,7 @@ class BaseStereoViewDataset (EasyDataset):
                  transform=ImgNorm,
                  aug_crop=False,
                  seed=None,
-                 gauss_std=False):
+                 gauss_std=0):
         self.num_views = 2
         self.split = split
         self._set_resolutions(resolution)
