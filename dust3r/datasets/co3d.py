@@ -18,7 +18,6 @@ import torch
 from dust3r.datasets.base.base_stereo_view_dataset import BaseStereoViewDataset
 from dust3r.utils.image import imread_cv2
 
-random.seed(777)
 
 class Co3d(BaseStereoViewDataset):
     def __init__(self, mask_bg=True, features=False, *args, ROOT, **kwargs):

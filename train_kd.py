@@ -10,7 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Sized
 from copy import deepcopy
-os.environ['CUDA_VISIBLE_DEVICES'] = "4,5,6,7"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
@@ -55,11 +55,11 @@ def get_args_parser():
     parser.add_argument('--kd', default=True, action='store_true', help="knowledge distillation (features)")
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='./log/gauss_1/', type=str, help="path where to save the output")
-    parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint")
-    parser.add_argument('--roma', default=False, action='store_true', help="Use RoMa")
+    parser.add_argument('--output_dir', default='./log/gauss_3_new/', type=str, help="path where to save the output")
+    parser.add_argument('--ckpt', default='./log/gauss_3_new/checkpoint-best.pth', type=str, help="resume from checkpoint")
+    parser.add_argument('--roma', default=None, action='store_true', help="Use RoMa")
     parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
-    parser.add_argument('--gauss_std', default=1, type=float, help="Gaussian noise standard deviation")
+    parser.add_argument('--gauss_std', default=3, type=float, help="Gaussian noise standard deviation")
     parser.add_argument('--gauss_std_test', default=(1,3,6,9), help="Gaussian noise standard deviation")
     return parser
 
