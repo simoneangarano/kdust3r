@@ -160,7 +160,7 @@ class Regr3D (Criterion, MultiLoss):
         self.kd = kd
         self.roma = roma
         if self.roma:
-            self.roma = roma_outdoor(device='cuda', coarse_res=224, upsample_res=224)
+            self.roma = roma_outdoor(device='cuda:3', coarse_res=224, upsample_res=224)
 
     def get_all_pts3d(self, gt1, gt2, pred1, pred2, dist_clip=None):
         valid1 = valid2 = torch.ones_like(gt1['pts3d'][..., 0], dtype=torch.bool)
@@ -206,10 +206,10 @@ class Regr3D (Criterion, MultiLoss):
         details = {self_name+'_pts3d': float(l1.mean() + l2.mean())/2}
         # roma loss
         if self.roma:
-            renorm_img1 = (gt1['img'] * 0.5 + 0.5 - ROMA_MEAN.to(gt_pts1.device)) / ROMA_STD.to(gt_pts1.device)  
             with torch.no_grad():
+                renorm_img1 = (gt1['img'] * 0.5 + 0.5 - ROMA_MEAN.to(gt_pts1.device)) / ROMA_STD.to(gt_pts1.device)  
                 renorm_img2 = (gt2['img'] * 0.5 + 0.5 - ROMA_MEAN.to(gt_pts1.device)) / ROMA_STD.to(gt_pts1.device)
-            warp, certainty = self.roma.match(renorm_img1, renorm_img2, batched=True, device=gt_pts1.device)
+                warp, certainty = self.roma.match(renorm_img1, renorm_img2, batched=True, device=gt_pts1.device)
             warp, certainty = warp.reshape(-1, 2*H*W, 4), certainty.reshape(-1, 2*H*W)
             kptsA, kptsB = self.roma.to_pixel_coordinates(warp, H, W, H, W)
             kptsA, kptsB = kptsA.type(torch.int64), kptsB.type(torch.int64)

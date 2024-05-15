@@ -31,12 +31,12 @@ def get_args_parser():
 
     parser.add_argument('--teacher_ckpt', default="checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth", type=str, help="path to the teacher model")
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--cuda', default=5, type=int, help="cuda device")
+    parser.add_argument('--cuda', default=3, type=int, help="cuda device")
     parser.add_argument('--ckpt', default='/home/sa58728/dust3r/log/gauss_3_roma_1000/checkpoint-best.pth', type=str, help="resume from checkpoint")
     parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
-    parser.add_argument('--kd', default=True, type=bool)
+    parser.add_argument('--kd_enc', default=True, type=bool)
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
-    parser.add_argument('--roma', default=None, action='store_true', help="Use RoMa")
+    parser.add_argument('--roma', default=1, action='store_true', help="Use RoMa")
     parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
     parser.add_argument('--gauss_std', default=(1,3,6,9), help="Gaussian noise std")
 
@@ -77,21 +77,19 @@ def main(args):
             model, device_ids=[args.gpu], find_unused_parameters=True, static_graph=True)
         
     # CRITERION
-    TEST_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd}), alpha=0.2, roma={args.roma}) + \
-                       Regr3D_ScaleShiftInv(L21, gt_scale=True, kd={args.kd}, roma={args.roma})"
+    TEST_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd_out}), alpha=0.2, roma={args.roma}) + \
+                       Regr3D_ScaleShiftInv(L21, gt_scale=True, kd={args.kd_out}, roma={args.roma})"
     test_criterion = eval(TEST_CRITERION).to(device)
 
     # TEST
     for test_name, testset in data_loader_test.items():
         print(test_name)
-        test_one_epoch(model, test_criterion, testset, device, 0,
-                       args=args, kd=args.kd, teacher=teacher, features=args.kd, roma=args.roma)
+        test_one_epoch(model, test_criterion, testset, device, 0, args=args, teacher=teacher)
         
         
 @torch.no_grad()
 def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
-                   data_loader: Sized, device: torch.device, epoch: int,
-                   args, kd=False, teacher=None, features=False, roma=None):
+                   data_loader: Sized, device: torch.device, epoch: int, args, teacher=None):
                     
     model.eval()
     metric_logger = misc.MetricLogger(delimiter="  ")
@@ -104,8 +102,8 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         data_loader.sampler.set_epoch(epoch)
 
     for _, batch in tqdm(enumerate(data_loader), total=len(data_loader)):
-        loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=features, 
-                                       ret='loss', kd=kd, kd_out=args.kd_out, teacher=teacher, lmd=args.lmd, roma=roma)
+        loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=args.kd_enc, 
+                                       ret='loss', kd_enc=args.kd_enc, kd_out=args.kd_out, teacher=teacher, lmd=args.lmd, roma=args.roma)
         loss_value, loss_details = loss_tuple
         metric_logger.update(loss=float(loss_value), **loss_details)
 

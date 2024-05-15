@@ -135,7 +135,7 @@ exp/
 log*/
 .vscode/
 output/
-utils/__pycache__/*
+*/__pycache__/*
 *.ply
 *.pyc
 pairs/

@@ -52,15 +52,16 @@ def get_args_parser():
     parser.add_argument('--keep_freq', default=1, type=int, help='frequence (number of epochs) to save checkpoint in checkpoint-%d.pth')
     parser.add_argument('--print_freq', default=100, type=int, help='frequence (number of iterations) to print infos while training')
     # kd
-    parser.add_argument('--kd', default=True, action='store_true', help="knowledge distillation (features)")
+    parser.add_argument('--kd_enc', default=True, action='store_true', help="knowledge distillation (features)")
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
     parser.add_argument('--output_dir', default='./log/gauss_3_new/', type=str, help="path where to save the output")
-    parser.add_argument('--ckpt', default='./log/gauss_3_new/checkpoint-best.pth', type=str, help="resume from checkpoint")
+    parser.add_argument('--ckpt', default='./log/gauss_3_new/checkpoint-5.pth', type=str, help="resume from checkpoint")
     parser.add_argument('--roma', default=None, action='store_true', help="Use RoMa")
     parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
     parser.add_argument('--gauss_std', default=3, type=float, help="Gaussian noise standard deviation")
     parser.add_argument('--gauss_std_test', default=(1,3,6,9), help="Gaussian noise standard deviation")
+    parser.add_argument('--start_epoch', default=5, type=int, help="Start epoch")
     return parser
 
 
@@ -109,9 +110,9 @@ def main(args):
     teacher, model = build_model_enc_dec(MODEL_KD, device, args)
 
     # CRITERION
-    TRAIN_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd}, roma={args.roma}), alpha=0.2)"
-    TEST_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd}), alpha=0.2, roma={args.roma}) + \
-                       Regr3D_ScaleShiftInv(L21, gt_scale=True, kd={args.kd}, roma={args.roma})"
+    TRAIN_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd_out}, roma={args.roma}), alpha=0.2)"
+    TEST_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd_out}), alpha=0.2, roma={args.roma}) + \
+                       Regr3D_ScaleShiftInv(L21, gt_scale=True, kd={args.kd_out}, roma={args.roma})"
     train_criterion = eval(TRAIN_CRITERION).to(device)
     test_criterion = eval(TEST_CRITERION).to(device)
     if args.distributed:
@@ -257,8 +258,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module, data_loa
         if data_iter_step % accum_iter == 0:
             misc.adjust_learning_rate(optimizer, epoch_f, args)
 
-        loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=args.kd,
-                                       use_amp=bool(args.amp), ret='loss', kd=args.kd, kd_out=args.kd_out,
+        loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=args.kd_enc,
+                                       use_amp=bool(args.amp), ret='loss', kd_enc=args.kd_enc, kd_out=args.kd_out,
                                        teacher=teacher, lmd=args.lmd, roma=roma)
         loss, loss_details = loss_tuple 
         loss_value = float(loss)
@@ -333,8 +334,8 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module, data_load
         data_loader.sampler.set_epoch(epoch)
 
     for _, batch in enumerate(data_loader):
-        loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=args.kd,
-                                       use_amp=bool(args.amp), ret='loss', kd=args.kd, kd_out=args.kd_out, roma=roma,
+        loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=args.kd_enc,
+                                       use_amp=bool(args.amp), ret='loss', kd_enc=args.kd_enc, kd_out=args.kd_out, roma=roma,
                                        teacher=teacher, lmd=args.lmd)
         loss_value, loss_details = loss_tuple  # criterion returns two values
         metric_logger.update(loss=float(loss_value), **loss_details)
@@ -364,7 +365,7 @@ def build_model_enc_dec(model_str, device, args):
     if args.ckpt:
         ckpt = torch.load(args.ckpt)
         model_kd.load_state_dict(ckpt['model'], strict=True)
-        args.start_epoch = ckpt['epoch']
+        # args.start_epoch = ckpt['epoch']
         model_kd.train()
 
     if args.encoder_only:

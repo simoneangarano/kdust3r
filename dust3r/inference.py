@@ -50,7 +50,7 @@ def make_batch_symmetric(batch):
 
 def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, use_amp=False, ret=None, 
                       return_times=False, features_only=False, features=False, 
-                      kd=False, kd_out=False, teacher=None, lmd=1, criterion_kd=torch.nn.MSELoss(),
+                      kd_enc=False, kd_out=False, teacher=None, lmd=1, criterion_kd=torch.nn.MSELoss(),
                       roma=None):
     view1, view2 = batch
     for view in batch:
@@ -75,8 +75,11 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
             # loss is supposed to be symmetric
             with torch.cuda.amp.autocast(enabled=False):
                 loss = criterion(view1, view2, pred1, pred2) if criterion is not None else None
-    
-    if kd:
+
+    if kd_enc or kd_out:
+        loss_tot = 0
+        loss_dict = 0
+
         with torch.no_grad():
             teacher_outs = teacher(view1, view2, return_times=return_times, features_only=features_only, features=features)
 
@@ -87,17 +90,20 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
             # loss is supposed to be symmetric
             with torch.cuda.amp.autocast(enabled=False):
                 loss = criterion(teach1, teach2, pred1, pred2) if criterion is not None else None
+                    
+            loss_tot = loss[0].clone()
+            loss_dict = loss[1].copy()
 
         loss_kd = 0
-        loss_tot = loss[0].clone()
-        loss_dict = loss[1].copy()
-        for pred_side, teacher_side in zip(outs, teacher_outs): # for each view
-            pred_feats = pred_side['features']
-            target_feats = teacher_side['features']
-            loss_kd += criterion_kd(pred_feats, target_feats) / 2
-            loss_tot += loss_kd * lmd
+        if kd_enc:
+            for pred_side, teacher_side in zip(outs, teacher_outs): # for each view
+                pred_feats = pred_side['features']
+                target_feats = teacher_side['features']
+                loss_kd += criterion_kd(pred_feats, target_feats) / 2
+                loss_tot += loss_kd * lmd
             
-        loss_dict['kd'] = loss_kd.item()
+            loss_dict['kd'] = loss_kd.item()
+
         loss = (loss_tot, loss_dict)
 
     if roma:
@@ -105,7 +111,7 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
         loss = (loss_tot, loss_dict)
 
     result = dict(view1=view1, view2=view2, pred1=pred1, pred2=pred2, loss=loss)
-    if kd:
+    if kd_enc or kd_out:
         result['teacher_outs'] = teacher_outs
 
     if return_times:

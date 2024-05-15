@@ -308,7 +308,7 @@ def save_model(args, epoch, model, optimizer, loss_scaler, fname=None, best_so_f
 
 
 def load_model(args, model, optimizer, loss_scaler):
-    args.start_epoch = 0
+    # args.start_epoch = 0
     best_so_far = None
     if args.resume is not None:
         if args.resume.startswith('https'):
