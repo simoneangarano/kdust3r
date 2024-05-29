@@ -29,6 +29,8 @@ import dust3r.datasets.utils.cropping as cropping  # noqa
 VIEWS = 1
 MAX_D = 128
 SAMPLE_SCALE = 0.25
+SCALE_FACTOR = 1.0
+DOWNSAMPLE = 1.0
 
 def get_parser():
     parser = argparse.ArgumentParser()
@@ -182,6 +184,21 @@ def scale_mvs_camera(cams, scale=1):
         cams[view] = scale_camera(cams[view], scale=scale)
     return cams
 
+def read_cam_file(filename):
+    with open(filename) as f:
+        lines = [line.rstrip() for line in f.readlines()]
+    # extrinsics: line [1,5), 4x4 matrix
+    extrinsics = np.fromstring(' '.join(lines[1:5]), dtype=np.float32, sep=' ')
+    extrinsics = extrinsics.reshape((4, 4))
+    # intrinsics: line [7-10), 3x3 matrix
+    intrinsics = np.fromstring(' '.join(lines[7:10]), dtype=np.float32, sep=' ')
+    intrinsics = intrinsics.reshape((3, 3))
+    # depth_min & depth_interval: line 11
+    depth_min = float(lines[11].split()[0]) * SCALE_FACTOR
+    depth_max = depth_min + float(lines[11].split()[1]) * 192 * SCALE_FACTOR
+    depth_interval = float(lines[11].split()[1])
+    return intrinsics, extrinsics, [depth_min, depth_max], depth_interval
+
 def scale_image(image, scale=1, interpolation='linear'):
     """ resize image using cv2 """
     if interpolation == 'linear':
@@ -232,6 +249,56 @@ def _read_pfm(file):
     data = np.flipud(data)
     return data, scale
 
+def read_depth(filename):
+    depth_h = np.array(read_pfm(filename)[0], dtype=np.float32)  # (800, 800)
+    # depth_h = cv2.resize(depth_h, None, fx=0.5, fy=0.5,
+    #                         interpolation=cv2.INTER_NEAREST)  # (600, 800)
+    # depth_h = depth_h[44:556, 80:720]  # (512, 640)
+    depth_h = cv2.resize(depth_h, None, fx=DOWNSAMPLE, fy=DOWNSAMPLE,
+                            interpolation=cv2.INTER_NEAREST)  # !!!!!!!!!!!!!!!!!!!!!!!!!
+    depth = cv2.resize(depth_h, None, fx=1.0 / 4, fy=1.0 / 4,
+                        interpolation=cv2.INTER_NEAREST)  # !!!!!!!!!!!!!!!!!!!!!!!!!
+    mask = depth > 0
+    mask_h = depth_h > 0
+
+    return depth, mask, depth_h, mask_h
+    
+def read_pfm(filename):
+    file = open(filename, 'rb')
+    color = None
+    width = None
+    height = None
+    scale = None
+    endian = None
+
+    header = file.readline().decode('utf-8').rstrip()
+    if header == 'PF':
+        color = True
+    elif header == 'Pf':
+        color = False
+    else:
+        raise Exception('Not a PFM file.')
+
+    dim_match = re.match(r'^(\d+)\s(\d+)\s$', file.readline().decode('utf-8'))
+    if dim_match:
+        width, height = map(int, dim_match.groups())
+    else:
+        raise Exception('Malformed PFM header.')
+
+    scale = float(file.readline().rstrip())
+    if scale < 0:  # little-endian
+        endian = '<'
+        scale = -scale
+    else:
+        endian = '>'  # big-endian
+
+    data = np.fromfile(file, endian + 'f')
+    shape = (height, width, 3) if color else (height, width)
+
+    data = np.reshape(data, shape)
+    data = np.flipud(data)
+    file.close()
+    return data, scale
 
 def prepare_sequences(bmvs_dir, output_dir, img_size, split, subset, seed):
     random.seed(seed)
@@ -247,30 +314,44 @@ def prepare_sequences(bmvs_dir, output_dir, img_size, split, subset, seed):
         except:
             continue
         selected_sequences_numbers_dict[seq_name].append(frame_number)
+
         # camera_extrinsics, camera_intrinsics, camera_info = load_cam(open(filepaths['cam'])) 
-        cams = [load_cam_old(open(filepaths['cam']))]
+        # cams = [load_cam_old(open(filepaths['cam']))]
+        intrinsic, extrinsic, near_far, depth_interval = read_cam_file(filepaths['cam'])
+        intrinsic[:2] *= 4
+        extrinsic[:3, 3] *= SCALE_FACTOR
+        intrinsic[:2] = intrinsic[:2] * DOWNSAMPLE
+        # multiply intrinsics and extrinsics to get projection matrix
+        proj_mat_l = np.eye(4)
+        intrinsic[:2] = intrinsic[:2] / 4
+        proj_mat_l[:3, :4] = intrinsic @ extrinsic[:3, :4]
+        camera_pose = np.linalg.inv(proj_mat_l)
+        camera_intrinsics = intrinsic
 
         depth_path = filepaths['depth']
-        input_depthmap = np.nan_to_num(_read_pfm_disp(depth_path), posinf=0, nan=0, neginf=0)
+        _, _, depth_h, input_mask = read_depth(depth_path)
+        depth_h *= SCALE_FACTOR
+        input_depthmap = depth_h
+        # input_depthmap = np.nan_to_num(_read_pfm_disp(depth_path), posinf=0, nan=0, neginf=0)
 
         # downsize by 4 to fit depth map output
         # input_depthmap = scale_image(input_depthmap, scale=SAMPLE_SCALE)
         # cams = scale_mvs_camera(cams, scale=SAMPLE_SCALE)
         # fix depth range and adapt depth sample number 
-        cams[0][1, 3, 2] = MAX_D
-        cams[0][1, 3, 1] = (cams[0][1, 3, 3] - cams[0][1, 3, 0]) / MAX_D
-        # mask out-of-range depth pixels (in a relaxed range)
-        depth_start = cams[0][1, 3, 0] + cams[0][1, 3, 1]
-        depth_end = cams[0][1, 3, 0] + (MAX_D - 2) * cams[0][1, 3, 1]
-        input_depthmap = mask_depth_image(input_depthmap, depth_start, depth_end).squeeze()
+        # cams[0][1, 3, 2] = MAX_D
+        # cams[0][1, 3, 1] = (cams[0][1, 3, 3] - cams[0][1, 3, 0]) / MAX_D
+        # # mask out-of-range depth pixels (in a relaxed range)
+        # depth_start = cams[0][1, 3, 0] + cams[0][1, 3, 1]
+        # depth_end = cams[0][1, 3, 0] + (MAX_D - 2) * cams[0][1, 3, 1]
+        # input_depthmap = mask_depth_image(input_depthmap, depth_start, depth_end).squeeze()
 
-        input_mask = input_depthmap > 0.0
+        # input_mask = input_depthmap > 0.0
         input_depthmap *= input_mask
         depth_mask = np.stack((input_depthmap, input_mask), axis=-1)
         H, W = input_depthmap.shape
 
-        camera_extrinsics = cams[0][0]
-        camera_intrinsics = cams[0][1][:3, :3]
+        # camera_extrinsics = cams[0][0]
+        # camera_intrinsics = cams[0][1][:3, :3]
 
         cx, cy = camera_intrinsics[:2, 2].round().astype(int)
         min_margin_x = min(cx, W-cx)
@@ -297,7 +378,7 @@ def prepare_sequences(bmvs_dir, output_dir, img_size, split, subset, seed):
         input_mask = depth_mask[:, :, 1]
 
         # generate and adjust camera pose
-        camera_pose = camera_extrinsics
+        # camera_pose = camera_extrinsics
         # camera_pose = np.linalg.inv(camera_pose)
 
         # save crop images and depth, metadata

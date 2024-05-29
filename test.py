@@ -17,6 +17,19 @@ seed = args.seed
 np.random.seed(seed)
 random.seed(seed)
 
+def tensor_to_plot(tensor, norm=None):
+    STD = np.array([0.229, 0.224, 0.225])
+    MEAN = np.array([0.485, 0.456, 0.406])
+    if len(tensor.shape) == 4:
+        tensor = tensor[0]
+    if len(tensor.shape) == 2:
+        return tensor.cpu().numpy()
+    elif norm == 'roma':
+        return tensor.cpu().permute(1,2,0).numpy() * STD + MEAN
+    elif norm == 'dust3r':
+        return (tensor.cpu().permute(1,2,0).numpy() * 0.5) + 0.5
+    return tensor.cpu().permute(1,2,0).numpy()
+
 # DATA
 # TEST_DATA =  f"Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
 # TEST_DATA += f"+ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
@@ -35,4 +48,7 @@ for test_name, testset in data_loader_test.items():
 
     for _, batch in enumerate(testset):
         view1, view2 = batch
+        
+        img = tensor_to_plot(view1['img'][0], norm='dust3r')
+        pts = tensor_to_plot(view1['pts3d'][0,...,-1].detach())
         
