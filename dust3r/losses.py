@@ -153,17 +153,25 @@ class Regr3D (Criterion, MultiLoss):
               = (RT21 @ pred_D2) - (RT1^-1 @ RT2 @ D2)
     """
 
-    def __init__(self, criterion, norm_mode='avg_dis', gt_scale=False, kd=False, roma=None):
+    def __init__(self, criterion, norm_mode='avg_dis', gt_scale=False, kd=False, roma=None, roma_thr=0.5,
+                 debug=False, asimmetric=False, device='cuda'):
         super().__init__(criterion)
         self.norm_mode = norm_mode
         self.gt_scale = gt_scale
         self.kd = kd
         self.roma = roma
+        self.roma_thr = roma_thr
+        self.debug = debug
+        self.asimmetric = asimmetric
         if self.roma:
-            self.roma = roma_outdoor(device='cuda:3', coarse_res=224, upsample_res=224)
+            self.roma = roma_outdoor(device=device, coarse_res=224, upsample_res=224)
 
     def get_all_pts3d(self, gt1, gt2, pred1, pred2, dist_clip=None):
-        valid1 = valid2 = torch.ones_like(gt1['pts3d'][..., 0], dtype=torch.bool)
+        if self.kd:
+            valid1 = valid2 = torch.ones_like(gt1['pts3d'][..., 0], dtype=torch.bool)
+        else:
+            valid1 = gt1['valid_mask'].clone()
+            valid2 = gt2['valid_mask'].clone()
 
         if not self.kd:
             # everything is normalized w.r.t. camera of view1
@@ -201,7 +209,10 @@ class Regr3D (Criterion, MultiLoss):
         # loss on img1 side
         l1 = self.criterion(pred_pts1[mask1], gt_pts1[mask1])
         # loss on gt2 side
-        l2 = self.criterion(pred_pts2[mask2], gt_pts2[mask2])
+        if self.asimmetric:
+            l2 = l1
+        else:
+            l2 = self.criterion(pred_pts2[mask2], gt_pts2[mask2])
         self_name = type(self).__name__
         details = {self_name+'_pts3d': float(l1.mean() + l2.mean())/2}
         # roma loss
@@ -217,6 +228,7 @@ class Regr3D (Criterion, MultiLoss):
 
             kpts1 = kptsA[:,:,:W,:] # B, H, W, 2
             kpts2 = kptsB[:,:,:W,:] # B, H, W, 2
+            conf = pred1['conf']
             pred1 = pred1['pts3d'] # -> kpts1
             pred2 = pred2['pts3d_in_other_view'] # -> kpts2
             kpts1, kpts2 = kpts1.reshape(-1,H*W,2), kpts2.reshape(-1,H*W,2)
@@ -227,12 +239,31 @@ class Regr3D (Criterion, MultiLoss):
             p1 = pred1_flat.gather(1, kpts1_flat.unsqueeze(-1).expand(-1,-1,3))
             p2 = pred2_flat.gather(1, kpts2_flat.unsqueeze(-1).expand(-1,-1,3))
 
-            cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > 0.5).float()
-            p1c = p1 * cert.unsqueeze(-1)
-            p2c = p2 * cert.unsqueeze(-1)
+            cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > self.roma_thr).float() # 
+            conf = (conf > 2).reshape(-1,H*W).float() # .reshape(-1,H*W)
+            m = cert * conf
+            p1c = p1 * m.unsqueeze(-1)
+            p2c = p2 * m.unsqueeze(-1)
 
-            details['roma_mse'] = (((p1c - p2c)**2).mean() / cert.mean()).item()
-            details['roma_mae'] = ((p1c - p2c).abs().mean() / cert.mean()).item()
+            # frame_diff = torch.abs(gt1['index'] - gt2['index'])
+            # mask = frame_diff < 5
+            if not m.any():
+                rl1, rl2 = torch.tensor([0.0], requires_grad=True), torch.tensor([0.0], requires_grad=True)
+            # else:
+            #     p1c, p2c = p1c[mask], p2c[mask]
+            #     rl2 = ((p1c - p2c)**2).mean() / cert.mean() / mask.float().mean()
+            #     rl1 = (p1c - p2c).abs().mean() / cert.mean() / mask.float().mean()
+            else:
+                rl2 = ((p1c - p2c)**2).mean() / m.mean()
+                rl1 = (p1c - p2c).abs().mean() / m.mean()
+            
+            details['roma_mse'] = rl2
+            details['roma_mae'] = rl1
+        
+        if self.debug:
+            details['roma_details'] = (p1.detach().cpu(), p2.detach().cpu(), 
+                                       certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W).detach().cpu())
+            details['scaled_outs'] = (gt_pts1, gt_pts2, pred_pts1, pred_pts2, mask1, mask2)
 
         return Sum((l1, mask1), (l2, mask2)), (details | monitoring)
 
@@ -248,7 +279,7 @@ class ConfLoss (MultiLoss):
         alpha: hyperparameter
     """
 
-    def __init__(self, pixel_loss, alpha=1, roma=None):
+    def __init__(self, pixel_loss, alpha=1):
         super().__init__()
         assert alpha > 0
         self.alpha = alpha

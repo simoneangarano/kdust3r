@@ -54,7 +54,7 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
                       roma=None):
     view1, view2 = batch
     for view in batch:
-        for name in 'img pts3d valid_mask camera_pose camera_intrinsics F_matrix corres'.split():  # pseudo_focal
+        for name in 'img pts3d valid_mask camera_pose camera_intrinsics F_matrix corres index'.split():  # pseudo_focal
             if name not in view:
                 continue
             view[name] = view[name].to(device, non_blocking=True)
@@ -74,11 +74,16 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
         else:
             # loss is supposed to be symmetric
             with torch.cuda.amp.autocast(enabled=False):
-                loss = criterion(view1, view2, pred1, pred2) if criterion is not None else None
+                if criterion is not None:
+                    loss = criterion(view1, view2, pred1, pred2)
+                    loss_tot = loss[0].clone()
+                    loss_dict = loss[1].copy()
+                else:
+                    loss = None
+                    loss_tot = 0
+                    loss_dict = {}
 
     if kd_enc or kd_out:
-        loss_tot = 0
-        loss_dict = 0
 
         with torch.no_grad():
             teacher_outs = teacher(view1, view2, return_times=return_times, features_only=features_only, features=features)
@@ -87,6 +92,8 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
             teach1, teach2 = teacher_outs
             teach1['img'] = view1['img']
             teach2['img'] = view2['img']
+            teach1['index'] = view1['index']
+            teach2['index'] = view2['index']
             # loss is supposed to be symmetric
             with torch.cuda.amp.autocast(enabled=False):
                 loss = criterion(teach1, teach2, pred1, pred2) if criterion is not None else None
@@ -106,9 +113,14 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
 
         loss = (loss_tot, loss_dict)
 
-    if roma:
-        loss_tot += loss_dict['roma_mse'] * 1000
+    if roma and loss_dict['roma_mae'] > 0:
+        loss_tot += loss_dict['roma_mse'] * roma
         loss = (loss_tot, loss_dict)
+        loss_dict['roma_mae'] = loss_dict['roma_mae'].item()
+        loss_dict['roma_mse'] = loss_dict['roma_mse'].item()
+
+    # if debug:
+    #     loss_dict['pred'] = outs
 
     result = dict(view1=view1, view2=view2, pred1=pred1, pred2=pred2, loss=loss)
     if kd_enc or kd_out:

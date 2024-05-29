@@ -142,6 +142,7 @@ class Co3d(BaseStereoViewDataset):
                 instance=osp.split(impath)[1],
                 img_path=impath,
                 points=points,
-                features=features
+                features=features,
+                index=int(im_idx)
             ))
         return views

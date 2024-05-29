@@ -2,148 +2,95 @@
 # Licensed under CC BY-NC-SA 4.0 (non-commercial use only).
 #
 # --------------------------------------------------------
-# Dataloader for preprocessed Co3d_v2
-# dataset at https://github.com/facebookresearch/co3d - Creative Commons Attribution-NonCommercial 4.0 International
-# See datasets_preprocess/preprocess_co3d.py
+# Dataloader for preprocessed scannet++
+# dataset at https://github.com/scannetpp/scannetpp - non-commercial research and educational purposes
+# https://kaldir.vc.in.tum.de/scannetpp/static/scannetpp-terms-of-use.pdf
+# See datasets_preprocess/preprocess_scannetpp.py
 # --------------------------------------------------------
 import os.path as osp
-import json
-import itertools
-from collections import deque
-import random
 import cv2
 import numpy as np
-import torch
 
 from dust3r.datasets.base.base_stereo_view_dataset import BaseStereoViewDataset
 from dust3r.utils.image import imread_cv2
 
-random.seed(777)
 
-class ScanNet(BaseStereoViewDataset):
-    def __init__(self, mask_bg=True, features=False, *args, ROOT, **kwargs):
+class ScanNetpp(BaseStereoViewDataset):
+    def __init__(self, *args, ROOT, **kwargs):
         self.ROOT = ROOT
         super().__init__(*args, **kwargs)
-        assert mask_bg in (True, False, 'rand')
-        self.mask_bg = mask_bg
-        self.features = features
+        assert self.split == 'train'
+        self.loaded_data = self._load_data()
 
-        # load all scenes
-        with open(osp.join('data/scannetpp', f'selected_seqs_{self.split}.json'), 'r') as f:
-            self.scenes = json.load(f)
-            self.scenes = {k: v for k, v in self.scenes.items() if len(v) > 0}
-            # self.scenes = {(k, k2): v2 for k, v in self.scenes.items()
-            #                for k2, v2 in v.items()}
-        self.scene_list = list(self.scenes.keys())
-
-        if isinstance(self.gauss_std, tuple) or self.gauss_std > 0:
-            self.combinations = [(i, j)
-                                for i, j in itertools.combinations(range(100), 2)
-                                if abs(i-j) == 3
-                                ]
-        else:
-            # for each scene, we have 100 images ==> 360 degrees (so 25 frames ~= 90 degrees)
-            # we prepare all combinations such that i-j = +/- [5, 10, .., 90] degrees
-            self.combinations = [(i, j)
-                                for i, j in itertools.combinations(range(100), 2)
-                                if 0 < abs(i-j) <= 30 and abs(i-j) % 5 == 0
-                                ]
-
-        self.invalidate = {scene: {} for scene in self.scene_list}
+    def _load_data(self):
+        with np.load(osp.join(self.ROOT, 'all_metadata.npz')) as data:
+            self.scenes = data['scenes']
+            self.sceneids = data['sceneids']
+            self.images = data['images']
+            self.intrinsics = data['intrinsics'].astype(np.float32)
+            self.trajectories = data['trajectories'].astype(np.float32)
+            self.pairs = data['pairs'][:, :2].astype(int)
 
     def __len__(self):
-        return len(self.scene_list) * len(self.combinations)
+        return len(self.pairs)
 
     def _get_views(self, idx, resolution, rng):
-        # choose a scene
-        obj = self.scene_list[idx // len(self.combinations)]
-        image_pool = self.scenes[obj]
-        im1_idx, im2_idx = self.combinations[idx % len(self.combinations)]
 
-        # add a bit of randomness
-        last = len(image_pool)-1
-
-        if resolution not in self.invalidate[obj]:  # flag invalid images
-            self.invalidate[obj][resolution] = [False for _ in range(len(image_pool))]
-
-        # decide now if we mask the bg
-        mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2)) # 50% chance
+        image_idx1, image_idx2 = self.pairs[idx]
 
         views = []
-        if isinstance(self.gauss_std, tuple):
-            imgs_idxs = [max(0, min(im_idx + int(rng.normal(loc=0.0, scale=random.sample(self.gauss_std,1))), last)) for im_idx in [im2_idx, im1_idx]]
-        elif self.gauss_std > 0:
-            imgs_idxs = [max(0, min(im_idx + int(rng.normal(loc=0.0, scale=self.gauss_std)), last)) for im_idx in [im2_idx, im1_idx]]
-        else:
-            imgs_idxs = [max(0, min(im_idx + rng.integers(-4, 5), last)) for im_idx in [im2_idx, im1_idx]]
-        imgs_idxs = deque(imgs_idxs)
-        while len(imgs_idxs) > 0:  # some images (few) have zero depth
-            im_idx = imgs_idxs.pop()
+        for view_idx in [image_idx1, image_idx2]:
+            scene_id = self.sceneids[view_idx]
+            scene_dir = osp.join(self.ROOT, self.scenes[scene_id])
 
-            try:
-                if self.invalidate[obj][resolution][im_idx]:
-                    # search for a valid image
-                    random_direction = 2 * rng.choice(2) - 1
-                    for offset in range(1, len(image_pool)):
-                        tentative_im_idx = (im_idx + (random_direction * offset)) % len(image_pool)
-                        if not self.invalidate[obj][resolution][tentative_im_idx]:
-                            im_idx = tentative_im_idx
-                            break
-            except:
-                print(obj, resolution, im_idx)
-                raise ValueError
-            view_idx = str(image_pool[im_idx])
+            intrinsics = self.intrinsics[view_idx]
+            camera_pose = self.trajectories[view_idx]
+            basename = self.images[view_idx]
 
-            impath = osp.join(self.ROOT, obj, 'images', f'DSC{view_idx.zfill(5)}.JPG')
-
-            # load camera params
-            input_metadata = np.load(impath.replace('JPG', 'npz'))
-            camera_pose = input_metadata['camera_pose'].astype(np.float32)
-            intrinsics = input_metadata['camera_intrinsics'].astype(np.float32)
-
-            # load image and depth
-            rgb_image = imread_cv2(impath)
-            depthmap = imread_cv2(impath.replace('images', 'depths').replace('JPG', 'png'), cv2.IMREAD_UNCHANGED)
-            # depthmap = (depthmap.astype(np.float32) / 65535) * np.nan_to_num(input_metadata['maximum_depth'])
-            depthmap = (depthmap.astype(np.float32) / 1000)
-
-            if mask_bg:
-                # load object mask
-                maskpath = osp.join(self.ROOT, obj, 'masks', f'DSC{view_idx.zfill(5)}.png')
-                maskmap = imread_cv2(maskpath, cv2.IMREAD_UNCHANGED).astype(np.float32)
-                maskmap = (maskmap / 255.0) > 0.1
-
-                # update the depthmap with mask
-                depthmap *= maskmap
+            # Load RGB image
+            rgb_image = imread_cv2(osp.join(scene_dir, 'images', basename + '.jpg'))
+            # Load depthmap
+            depthmap = imread_cv2(osp.join(scene_dir, 'depth', basename + '.png'), cv2.IMREAD_UNCHANGED)
+            depthmap = depthmap.astype(np.float32) / 1000
+            depthmap[~np.isfinite(depthmap)] = 0  # invalid
 
             rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, depthmap, intrinsics, resolution, rng=rng, info=impath)
-
-            num_valid = (depthmap > 0.0).sum()
-            # if num_valid == 0:
-            #     # problem, invalidate image and retry
-            #     # print(f"Invalid image {impath} for {obj} {instance} {resolution} {im_idx}")
-            #     self.invalidate[obj, instance][resolution][im_idx] = True
-            #     imgs_idxs.append(im_idx)
-            #     continue
-
-            # load features
-            if self.features:
-                features = np.load(impath.replace('JPG', 'npy'))
-                points = 0
-            else:
-                features, points = 0, 0
+                rgb_image, depthmap, intrinsics, resolution, rng=rng, info=view_idx)
 
             views.append(dict(
                 img=rgb_image,
-                depthmap=depthmap,
-                camera_pose=camera_pose,
-                camera_intrinsics=intrinsics,
+                depthmap=depthmap.astype(np.float32),
+                camera_pose=camera_pose.astype(np.float32),
+                camera_intrinsics=intrinsics.astype(np.float32),
                 dataset='ScanNet++',
-                label=osp.join(obj),
-                instance=osp.split(impath)[1],
-                img_path=impath,
-                points=points,
-                features=features
+                label=self.scenes[scene_id] + '_' + basename,
+                instance=f'{str(idx)}_{str(view_idx)}',
             ))
         return views
+
+
+if __name__ == "__main__":
+    from dust3r.datasets.base.base_stereo_view_dataset import view_name
+    from dust3r.viz import SceneViz, auto_cam_size
+    from dust3r.utils.image import rgb
+
+    dataset = ScanNetpp(split='train', ROOT="data/scannetpp_processed", resolution=224, aug_crop=16)
+
+    for idx in np.random.permutation(len(dataset)):
+        views = dataset[idx]
+        assert len(views) == 2
+        print(view_name(views[0]), view_name(views[1]))
+        viz = SceneViz()
+        poses = [views[view_idx]['camera_pose'] for view_idx in [0, 1]]
+        cam_size = max(auto_cam_size(poses), 0.001)
+        for view_idx in [0, 1]:
+            pts3d = views[view_idx]['pts3d']
+            valid_mask = views[view_idx]['valid_mask']
+            colors = rgb(views[view_idx]['img'])
+            viz.add_pointcloud(pts3d, colors, valid_mask)
+            viz.add_camera(pose_c2w=views[view_idx]['camera_pose'],
+                           focal=views[view_idx]['camera_intrinsics'][0, 0],
+                           color=(idx*255, (1 - idx)*255, 0),
+                           image=colors,
+                           cam_size=cam_size)
+        viz.show()

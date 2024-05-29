@@ -6,9 +6,12 @@ import random
 from .utils.transforms import *
 from .base.batched_sampler import BatchedRandomSampler  # noqa: F401
 from .co3d import Co3d  # noqa: F401
-from .scannetpp import ScanNet  # noqa: F401
+from .scannetpp_old import ScanNet  # noqa: F401
+from .scannetpp import ScanNetpp  # noqa: F401
 from .dl3dv import DL3DV  # noqa: F401
 from .megadepth import MegaDepth  # noqa: F401
+from .dtu import DTU  # noqa: F401
+from .blendedmvs import BlendedMVS  # noqa: F401
 
 def get_data_loader(dataset, batch_size, num_workers=8, shuffle=True, drop_last=True, pin_mem=True):
     import torch

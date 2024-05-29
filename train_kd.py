@@ -14,7 +14,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
-torch.backends.cuda.matmul.allow_tf32 = True  # for gpu >= Ampere and pytorch >= 1.12
+torch.backends.cuda.matmul.allow_tf32 = False  # for gpu >= Ampere and pytorch >= 1.12
 
 from dust3r.model import AsymmetricCroCo3DStereo, inf  # noqa: F401, needed when loading the model
 from dust3r.datasets import get_data_loader  # noqa
@@ -50,18 +50,20 @@ def get_args_parser():
     parser.add_argument('--eval_freq', type=int, default=1, help='Test loss evaluation frequency')
     parser.add_argument('--save_freq', default=1, type=int, help='frequence (number of epochs) to save checkpoint in checkpoint-last.pth')
     parser.add_argument('--keep_freq', default=1, type=int, help='frequence (number of epochs) to save checkpoint in checkpoint-%d.pth')
-    parser.add_argument('--print_freq', default=100, type=int, help='frequence (number of iterations) to print infos while training')
+    parser.add_argument('--print_freq', default=200, type=int, help='frequence (number of iterations) to print infos while training')
     # kd
     parser.add_argument('--kd_enc', default=True, action='store_true', help="knowledge distillation (features)")
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='./log/gauss_3_new/', type=str, help="path where to save the output")
-    parser.add_argument('--ckpt', default='./log/gauss_3_new/checkpoint-5.pth', type=str, help="resume from checkpoint")
-    parser.add_argument('--roma', default=None, action='store_true', help="Use RoMa")
+    parser.add_argument('--output_dir', default='log/gauss1_init_roma1000_mask', type=str, help="path where to save the output")
+    parser.add_argument('--ckpt', default='log/gauss1_init_roma1000_mask/checkpoint-best.pth', type=str, help="resume from checkpoint") # "checkpoints/small_base.pth"
+    parser.add_argument('--roma', default=1000, help="Use RoMa")
+    parser.add_argument('--roma_thr', default=0.5, help="RoMa threshold")
     parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
-    parser.add_argument('--gauss_std', default=3, type=float, help="Gaussian noise standard deviation")
+    parser.add_argument('--decoder_size', default='base', type=str, help="Decoder size")
+    parser.add_argument('--gauss_std', default=1, type=float, help="Gaussian noise standard deviation")
     parser.add_argument('--gauss_std_test', default=(1,3,6,9), help="Gaussian noise standard deviation")
-    parser.add_argument('--start_epoch', default=5, type=int, help="Start epoch")
+    parser.add_argument('--start_epoch', default=4, type=int, help="Start epoch")
     return parser
 
 
@@ -94,15 +96,16 @@ def main(args):
     TEST_DATA =  f"{N_TEST} @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
     TEST_DATA += f" + {N_TEST} @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
     TEST_DATA += f" + {N_TEST} @ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
+    # TEST_DATA += f" + {N_TEST} @ DTU(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
 
     data_loader_train = build_dataset(TRAIN_DATA, args.batch_size, args.num_workers, test=False)
     data_loader_test = {dataset.split('(')[0]: build_dataset(dataset, args.batch_size, args.num_workers, test=True)
                         for dataset in TEST_DATA.split('+')}
 
     # MODEL
-    if args.encoder_only:
+    if args.encoder_only or args.decoder_size == 'base':
         model_dims = [384, 6, 768, 12]
-    else:
+    elif args.decoder_size == 'tiny':
         model_dims = [384, 6, 192, 3]
     MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
                 output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
@@ -110,9 +113,9 @@ def main(args):
     teacher, model = build_model_enc_dec(MODEL_KD, device, args)
 
     # CRITERION
-    TRAIN_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd_out}, roma={args.roma}), alpha=0.2)"
-    TEST_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd_out}), alpha=0.2, roma={args.roma}) + \
-                       Regr3D_ScaleShiftInv(L21, gt_scale=True, kd={args.kd_out}, roma={args.roma})"
+    TRAIN_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd_out}, roma={args.roma}, roma_thr={args.roma_thr}, device=device), alpha=0.2)"
+    TEST_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd_out}, roma={args.roma}, roma_thr={args.roma_thr}, device=device), alpha=0.2) + \
+                       Regr3D_ScaleShiftInv(L21, gt_scale=True, kd={args.kd_out}, roma={args.roma}, roma_thr={args.roma_thr}, device=device)"
     train_criterion = eval(TRAIN_CRITERION).to(device)
     test_criterion = eval(TEST_CRITERION).to(device)
     if args.distributed:
@@ -364,11 +367,14 @@ def build_model_enc_dec(model_str, device, args):
 
     if args.ckpt:
         ckpt = torch.load(args.ckpt)
-        model_kd.load_state_dict(ckpt['model'], strict=True)
+        try:
+            model_kd.load_state_dict(ckpt['model'], strict=True)
+        except:
+            model_kd.load_state_dict(ckpt, strict=False)
         # args.start_epoch = ckpt['epoch']
         model_kd.train()
 
-    if args.encoder_only:
+    if args.encoder_only or args.decoder_size == 'base':
         model.patch_embed = deepcopy(model_kd.patch_embed)
         model.mask_generator = deepcopy(model_kd.mask_generator)
         model.rope = deepcopy(model_kd.rope)
@@ -383,7 +389,7 @@ def build_model_enc_dec(model_str, device, args):
 
 def set_trainable(model, args):
     model.train()
-    if args.encoder_only:
+    if args.encoder_only or args.decoder_size == 'base':
         module_list = ['decoder_embed', 'dec_blocks', 'dec_norm', 'dec_blocks2', 'downstream_head1', 'downstream_head2']
         for m in module_list:
             if hasattr(model, m):

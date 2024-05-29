@@ -10,9 +10,10 @@ from dust3r.utils.device import to_numpy
 from dust3r.model import AsymmetricCroCo3DStereo, inf
 
 ENCODER_ONLY = True # if True, use teacher's decoder and student's encoder
-CKPT = f'log/train_v2_2/checkpoint-best.pth' # student's checkpoint
+CKPT = f'log/gauss_3_init/checkpoint-best.pth' # student's checkpoint
 TEACHER_CKPT = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth" # teacher's checkpoint
-TEST_SUBSETS = ['co3d_test_1', 'co3d_test_2', 'croco', 'dtu'] # image pairs to test
+TEST_SUBSETS = ['co3d_new', 'co3d_test_1', 'co3d_test_2', 'croco', 'dtu'] # image pairs to test
+
 
 def main():
 
@@ -108,7 +109,7 @@ def build_model_enc_dec(model_str, device):
     model_kd.to(device)
     model_kd.eval()
 
-    ckpt = torch.load(CKPT)
+    ckpt = torch.load(CKPT, map_location=device)
     model_kd.load_state_dict(ckpt['model'], strict=True)
     model_kd.train()
 

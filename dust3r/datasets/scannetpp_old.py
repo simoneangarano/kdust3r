@@ -20,7 +20,7 @@ from dust3r.utils.image import imread_cv2
 
 random.seed(777)
 
-class DL3DV(BaseStereoViewDataset):
+class ScanNet(BaseStereoViewDataset):
     def __init__(self, mask_bg=True, features=False, *args, ROOT, **kwargs):
         self.ROOT = ROOT
         super().__init__(*args, **kwargs)
@@ -29,7 +29,7 @@ class DL3DV(BaseStereoViewDataset):
         self.features = features
 
         # load all scenes
-        with open(osp.join(self.ROOT, f'selected_seqs_{self.split}.json'), 'r') as f:
+        with open(osp.join('data/scannetpp', f'selected_seqs_{self.split}.json'), 'r') as f:
             self.scenes = json.load(f)
             self.scenes = {k: v for k, v in self.scenes.items() if len(v) > 0}
             # self.scenes = {(k, k2): v2 for k, v in self.scenes.items()
@@ -67,7 +67,7 @@ class DL3DV(BaseStereoViewDataset):
             self.invalidate[obj][resolution] = [False for _ in range(len(image_pool))]
 
         # decide now if we mask the bg
-        # mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2)) # 50% chance
+        mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2)) # 50% chance
 
         views = []
         if isinstance(self.gauss_std, tuple):
@@ -92,33 +92,34 @@ class DL3DV(BaseStereoViewDataset):
             except:
                 print(obj, resolution, im_idx)
                 raise ValueError
-            view_idx = image_pool[im_idx]
+            view_idx = str(image_pool[im_idx])
 
-            impath = osp.join(self.ROOT, obj, 'gaussian_splat/images_4', f'frame_{view_idx:05n}.png')
+            impath = osp.join(self.ROOT, obj, 'images', f'DSC{view_idx.zfill(5)}.JPG')
 
             # load camera params
-            # input_metadata = np.load(impath.replace('jpg', 'npz'))
-            # camera_pose = input_metadata['camera_pose'].astype(np.float32)
-            intrinsics = np.eye(3, dtype=np.float32)
+            input_metadata = np.load(impath.replace('JPG', 'npz'))
+            camera_pose = input_metadata['camera_pose'].astype(np.float32)
+            intrinsics = input_metadata['camera_intrinsics'].astype(np.float32)
 
             # load image and depth
             rgb_image = imread_cv2(impath)
-            # depthmap = imread_cv2(impath.replace('images', 'depths') + '.geometric.png', cv2.IMREAD_UNCHANGED)
+            depthmap = imread_cv2(impath.replace('images', 'depths').replace('JPG', 'png'), cv2.IMREAD_UNCHANGED)
             # depthmap = (depthmap.astype(np.float32) / 65535) * np.nan_to_num(input_metadata['maximum_depth'])
+            depthmap = (depthmap.astype(np.float32) / 1000)
 
-            # if mask_bg:
-            #     # load object mask
-            #     maskpath = osp.join(self.ROOT, obj, instance, 'masks', f'frame{view_idx:06n}.png')
-            #     maskmap = imread_cv2(maskpath, cv2.IMREAD_UNCHANGED).astype(np.float32)
-            #     maskmap = (maskmap / 255.0) > 0.1
+            if mask_bg:
+                # load object mask
+                maskpath = osp.join(self.ROOT, obj, 'masks', f'DSC{view_idx.zfill(5)}.png')
+                maskmap = imread_cv2(maskpath, cv2.IMREAD_UNCHANGED).astype(np.float32)
+                maskmap = (maskmap / 255.0) > 0.1
 
-            #     # update the depthmap with mask
-            #     depthmap *= maskmap
+                # update the depthmap with mask
+                depthmap *= maskmap
 
-            rgb_image = self._crop_resize_image(
-                rgb_image, resolution, rng=rng, info=impath, intrinsics=intrinsics)
+            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
+                rgb_image, depthmap, intrinsics, resolution, rng=rng, info=impath)
 
-            # num_valid = (depthmap > 0.0).sum()
+            num_valid = (depthmap > 0.0).sum()
             # if num_valid == 0:
             #     # problem, invalidate image and retry
             #     # print(f"Invalid image {impath} for {obj} {instance} {resolution} {im_idx}")
@@ -128,15 +129,17 @@ class DL3DV(BaseStereoViewDataset):
 
             # load features
             if self.features:
-                features = np.load(impath.replace('jpg', 'npy'))
+                features = np.load(impath.replace('JPG', 'npy'))
                 points = 0
             else:
                 features, points = 0, 0
 
             views.append(dict(
                 img=rgb_image,
+                depthmap=depthmap,
+                camera_pose=camera_pose,
                 camera_intrinsics=intrinsics,
-                dataset='DL3DV-10K',
+                dataset='ScanNet++',
                 label=osp.join(obj),
                 instance=osp.split(impath)[1],
                 img_path=impath,
