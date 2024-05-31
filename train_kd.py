@@ -55,15 +55,15 @@ def get_args_parser():
     parser.add_argument('--kd_enc', default=True, action='store_true', help="knowledge distillation (features)")
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='log/gauss1_init_roma1000_mask', type=str, help="path where to save the output")
-    parser.add_argument('--ckpt', default='log/gauss1_init_roma1000_mask/checkpoint-best.pth', type=str, help="resume from checkpoint") # "checkpoints/small_base.pth"
+    parser.add_argument('--output_dir', default='log/gauss3_init_roma1000_weight_dec', type=str, help="path where to save the output")
+    parser.add_argument('--ckpt', default="checkpoints/small_tiny.pth", type=str, help="resume from checkpoint") # "checkpoints/small_base.pth"
     parser.add_argument('--roma', default=1000, help="Use RoMa")
     parser.add_argument('--roma_thr', default=0.5, help="RoMa threshold")
-    parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
-    parser.add_argument('--decoder_size', default='base', type=str, help="Decoder size")
-    parser.add_argument('--gauss_std', default=1, type=float, help="Gaussian noise standard deviation")
+    parser.add_argument('--encoder_only', default=False, action='store_true', help="Train only the encoder")
+    parser.add_argument('--decoder_size', default='tiny', type=str, help="Decoder size")
+    parser.add_argument('--gauss_std', default=3, type=float, help="Gaussian noise standard deviation")
     parser.add_argument('--gauss_std_test', default=(1,3,6,9), help="Gaussian noise standard deviation")
-    parser.add_argument('--start_epoch', default=4, type=int, help="Start epoch")
+    parser.add_argument('--start_epoch', default=0, type=int, help="Start epoch")
     return parser
 
 

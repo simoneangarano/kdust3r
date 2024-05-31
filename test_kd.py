@@ -31,11 +31,11 @@ def get_args_parser():
 
     parser.add_argument('--teacher_ckpt', default="checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth", type=str, help="path to the teacher model")
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--cuda', default=1, type=int, help="cuda device")
-    parser.add_argument('--ckpt', default='log/gauss_3_roma_1000/checkpoint-best.pth', type=str, help="resume from checkpoint")
+    parser.add_argument('--cuda', default=0, type=int, help="cuda device")
+    parser.add_argument('--ckpt', default='log/gauss3_init_roma1000_mask/checkpoint-best.pth', type=str, help="resume from checkpoint")
     parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
     parser.add_argument('--kd_enc', default=True, type=bool)
-    parser.add_argument('--kd_out', default=False, action='store_true', help="knowledge distillation (output)")
+    parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
     parser.add_argument('--roma', default=1, action='store_true', help="Use RoMa")
     parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
     parser.add_argument('--gauss_std', default=(1,3,6,9), help="Gaussian noise std")
@@ -58,11 +58,11 @@ def main(args):
     cudnn.deterministic = True
 
     # DATA
-    # TEST_DATA =  f"Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    # TEST_DATA += f"+ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    # TEST_DATA += f"+ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std})"
+    TEST_DATA =  f"Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
+    TEST_DATA += f"+ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
+    TEST_DATA += f"+ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std})"
     # TEST_DATA = f"DTU(split='train', ROOT='/ssd1/sa58728/dust3r/data/dtu_processed_old', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    TEST_DATA = f"BlendedMVS(split='val', ROOT='/ssd1/sa58728/dust3r/data/blendedmvs_processed/', resolution=224, seed=777, gauss_std={args.gauss_std})"
+    # TEST_DATA = f"BlendedMVS(split='val', ROOT='/ssd1/sa58728/dust3r/data/blendedmvs_processed/', resolution=224, seed=777, gauss_std={args.gauss_std})"
 
     data_loader_test = {dataset.split('(')[0]: build_dataset(dataset, args.batch_size, args.num_workers, test=True)
                         for dataset in TEST_DATA.split('+')}

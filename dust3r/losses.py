@@ -239,23 +239,43 @@ class Regr3D (Criterion, MultiLoss):
             p1 = pred1_flat.gather(1, kpts1_flat.unsqueeze(-1).expand(-1,-1,3))
             p2 = pred2_flat.gather(1, kpts2_flat.unsqueeze(-1).expand(-1,-1,3))
 
-            cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > self.roma_thr).float() # 
-            conf = (conf > 2).reshape(-1,H*W).float() # .reshape(-1,H*W)
+
+            cert = certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W)
+            conf = conf.reshape(-1,H*W)
+            conf = torch.sigmoid(torch.log(conf))
             m = cert * conf
             p1c = p1 * m.unsqueeze(-1)
             p2c = p2 * m.unsqueeze(-1)
 
             # frame_diff = torch.abs(gt1['index'] - gt2['index'])
             # mask = frame_diff < 5
-            if not m.any():
-                rl1, rl2 = torch.tensor([0.0], requires_grad=True), torch.tensor([0.0], requires_grad=True)
+            # if not m.any():
+            #     rl1, rl2 = torch.tensor([0.0], requires_grad=True), torch.tensor([0.0], requires_grad=True)
             # else:
             #     p1c, p2c = p1c[mask], p2c[mask]
             #     rl2 = ((p1c - p2c)**2).mean() / cert.mean() / mask.float().mean()
             #     rl1 = (p1c - p2c).abs().mean() / cert.mean() / mask.float().mean()
-            else:
-                rl2 = ((p1c - p2c)**2).mean() / m.mean()
-                rl1 = (p1c - p2c).abs().mean() / m.mean()
+            # else:
+            rl2 = ((p1c - p2c)**2).mean() / (m > 0).float().mean()
+            rl1 = (p1c - p2c).abs().mean() / (m > 0).float().mean()
+
+            # cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > self.roma_thr).float() # 
+            # conf = (conf > 2).reshape(-1,H*W).float() # .reshape(-1,H*W)
+            # m = cert * conf
+            # p1c = p1 * m.unsqueeze(-1)
+            # p2c = p2 * m.unsqueeze(-1)
+
+            # frame_diff = torch.abs(gt1['index'] - gt2['index'])
+            # mask = frame_diff < 5
+            # if not m.any():
+            #     rl1, rl2 = torch.tensor([0.0], requires_grad=True), torch.tensor([0.0], requires_grad=True)
+            # else:
+            #     p1c, p2c = p1c[mask], p2c[mask]
+            #     rl2 = ((p1c - p2c)**2).mean() / cert.mean() / mask.float().mean()
+            #     rl1 = (p1c - p2c).abs().mean() / cert.mean() / mask.float().mean()
+            # else:
+            #     rl2 = ((p1c - p2c)**2).mean() / m.mean()
+            #     rl1 = (p1c - p2c).abs().mean() / m.mean()
             
             details['roma_mse'] = rl2
             details['roma_mae'] = rl1
