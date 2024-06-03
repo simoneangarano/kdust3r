@@ -239,13 +239,26 @@ class Regr3D (Criterion, MultiLoss):
             p1 = pred1_flat.gather(1, kpts1_flat.unsqueeze(-1).expand(-1,-1,3))
             p2 = pred2_flat.gather(1, kpts2_flat.unsqueeze(-1).expand(-1,-1,3))
 
+            # weight
+            # cert = certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W)
+            # conf = conf.reshape(-1,H*W)
+            # conf = torch.sigmoid(torch.log(conf))
 
-            cert = certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W)
-            conf = conf.reshape(-1,H*W)
-            conf = torch.sigmoid(torch.log(conf))
+            # mask
+            # cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > self.roma_thr).float() # 
+            # conf = (conf > 2).reshape(-1,H*W).float() # .reshape(-1,H*W)
+
+            # overlap
+            # cert > 0.5 must have more than 1% of the pixels to have enough overlap
+            cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > self.roma_thr).float() # 
+            conf = torch.ones_like(cert)
+
             m = cert * conf
             p1c = p1 * m.unsqueeze(-1)
             p2c = p2 * m.unsqueeze(-1)
+            
+            # if m.mean() < 0.01:
+            #     rl1, rl2 = torch.tensor([0.0], requires_grad=True), torch.tensor([0.0], requires_grad=True)
 
             # frame_diff = torch.abs(gt1['index'] - gt2['index'])
             # mask = frame_diff < 5

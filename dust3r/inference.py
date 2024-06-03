@@ -114,7 +114,7 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
         loss = (loss_tot, loss_dict)
 
     if roma and loss_dict['roma_mae'] > 0:
-        loss_tot += loss_dict['roma_mse'] * roma
+        loss_tot += loss_dict['roma_mae'] * roma
         loss = (loss_tot, loss_dict)
         loss_dict['roma_mae'] = loss_dict['roma_mae'].item()
         loss_dict['roma_mse'] = loss_dict['roma_mse'].item()

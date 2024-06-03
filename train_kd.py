@@ -6,6 +6,7 @@ import sys
 import time
 import math
 import random
+import wandb
 from collections import defaultdict
 from pathlib import Path
 from typing import Sized
@@ -55,12 +56,12 @@ def get_args_parser():
     parser.add_argument('--kd_enc', default=True, action='store_true', help="knowledge distillation (features)")
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
     parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='log/gauss3_init_roma1000_weight_dec', type=str, help="path where to save the output")
-    parser.add_argument('--ckpt', default="checkpoints/small_tiny.pth", type=str, help="resume from checkpoint") # "checkpoints/small_base.pth"
-    parser.add_argument('--roma', default=1000, help="Use RoMa")
+    parser.add_argument('--output_dir', default='log/gauss3_roma100_l1', type=str, help="path where to save the output")
+    parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint") # "checkpoints/small_base.pth"
+    parser.add_argument('--roma', default=100, help="Use RoMa")
     parser.add_argument('--roma_thr', default=0.5, help="RoMa threshold")
-    parser.add_argument('--encoder_only', default=False, action='store_true', help="Train only the encoder")
-    parser.add_argument('--decoder_size', default='tiny', type=str, help="Decoder size")
+    parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
+    parser.add_argument('--decoder_size', default='base', type=str, help="Decoder size")
     parser.add_argument('--gauss_std', default=3, type=float, help="Gaussian noise standard deviation")
     parser.add_argument('--gauss_std_test', default=(1,3,6,9), help="Gaussian noise standard deviation")
     parser.add_argument('--start_epoch', default=0, type=int, help="Start epoch")
@@ -84,6 +85,8 @@ def main(args):
         cudnn.benchmark = False
     else:
         cudnn.benchmark = True
+
+    wandb.init(project=args.output_dir.split('/')[-1], config=vars(args))   
 
     # DATASET
     N, N_TEST = 100000, 1000
@@ -293,6 +296,15 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module, data_loa
             log_writer.add_scalar('train_iter', epoch_1000x, epoch_1000x)
             for name, _ in loss_details.items():
                 log_writer.add_scalar('train_'+name, getattr(metric_logger, name).avg, epoch_1000x)
+            
+            log_dict = {
+                "train_loss": loss_value, 
+                "train_lr": lr,
+                "train_iter": epoch_1000x,
+            }
+            for name, _ in loss_details.items():
+                log_dict['train_'+name] = getattr(metric_logger, name).avg
+            wandb.log(log_dict)
 
         if do_test_now(data_iter_step, accum_iter) and log_writer is not None:
             new_best = False
@@ -348,7 +360,10 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module, data_load
     results = {f'{k}_{tag}': getattr(meter, attr) for k, meter in metric_logger.meters.items() for tag, attr in aggs}
     epoch_1000x = curr_step
     for name, val in results.items():
-        log_writer.add_scalar(prefix+'_'+name, val, epoch_1000x)
+        log_writer.add_scalar(prefix+'_'+name, val)
+    log_dict = {prefix+'_'+k: v for k, v in results.items()}
+    log_dict[prefix+'_iter'] = epoch_1000x
+    wandb.log(log_dict)
     return results
 
 
