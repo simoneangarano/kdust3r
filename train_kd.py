@@ -55,9 +55,9 @@ def get_args_parser():
     # kd
     parser.add_argument('--kd_enc', default=True, action='store_true', help="knowledge distillation (features)")
     parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
-    parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='log/gauss3_roma100_l1', type=str, help="path where to save the output")
-    parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint") # "checkpoints/small_base.pth"
+    parser.add_argument('--lmd', default=30, type=float, help="kd loss weight")
+    parser.add_argument('--output_dir', default='log/gauss3_init_roma100_mask_l1_30', type=str, help="path where to save the output")
+    parser.add_argument('--ckpt', default="checkpoints/small_base.pth", type=str, help="resume from checkpoint") # "checkpoints/small_base.pth"
     parser.add_argument('--roma', default=100, help="Use RoMa")
     parser.add_argument('--roma_thr', default=0.5, help="RoMa threshold")
     parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
@@ -86,8 +86,6 @@ def main(args):
     else:
         cudnn.benchmark = True
 
-    wandb.init(project=args.output_dir.split('/')[-1], config=vars(args))   
-
     # DATASET
     N, N_TEST = 100000, 1000
     TRAIN_DATA = f"{N} @ Co3d(split='train', ROOT='/ssd1/wenyan/co3d_2_cat_processed', \
@@ -110,6 +108,8 @@ def main(args):
         model_dims = [384, 6, 768, 12]
     elif args.decoder_size == 'tiny':
         model_dims = [384, 6, 192, 3]
+    elif args.decoder_size == 'small':
+        model_dims = [384, 6, 384, 6]
     MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
                 output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
                 enc_embed_dim={}, enc_depth=12, enc_num_heads={}, dec_embed_dim={}, dec_depth=12, dec_num_heads={}, adapter=True)".format(*model_dims)
@@ -159,6 +159,7 @@ def main(args):
         best_so_far = float('inf')
     if global_rank == 0 and args.output_dir is not None:
         log_writer = SummaryWriter(log_dir=args.output_dir)
+        wandb.init(project='KDUSt3R', name=args.output_dir.split('/')[-1], config=vars(args))   
     else:
         log_writer = None
 
@@ -360,7 +361,7 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module, data_load
     results = {f'{k}_{tag}': getattr(meter, attr) for k, meter in metric_logger.meters.items() for tag, attr in aggs}
     epoch_1000x = curr_step
     for name, val in results.items():
-        log_writer.add_scalar(prefix+'_'+name, val)
+        log_writer.add_scalar(prefix+'_'+name, val, epoch_1000x)
     log_dict = {prefix+'_'+k: v for k, v in results.items()}
     log_dict[prefix+'_iter'] = epoch_1000x
     wandb.log(log_dict)

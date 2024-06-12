@@ -142,3 +142,4 @@ pairs/
 test_pairs/
 x.py
 test/
+wandb/

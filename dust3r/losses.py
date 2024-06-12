@@ -245,13 +245,13 @@ class Regr3D (Criterion, MultiLoss):
             # conf = torch.sigmoid(torch.log(conf))
 
             # mask
-            # cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > self.roma_thr).float() # 
-            # conf = (conf > 2).reshape(-1,H*W).float() # .reshape(-1,H*W)
+            cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > self.roma_thr).float() # 
+            conf = (conf > 2).reshape(-1,H*W).float() # .reshape(-1,H*W)
 
             # overlap
             # cert > 0.5 must have more than 1% of the pixels to have enough overlap
-            cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > self.roma_thr).float() # 
-            conf = torch.ones_like(cert)
+            # cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > self.roma_thr).float() # 
+            # conf = torch.ones_like(cert)
 
             m = cert * conf
             p1c = p1 * m.unsqueeze(-1)
