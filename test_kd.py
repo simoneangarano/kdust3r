@@ -30,20 +30,21 @@ def get_args_parser():
     parser.add_argument('--local_rank', default=0, type=int)
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
 
-    parser.add_argument('--teacher_ckpt', default="checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth", type=str, help="path to the teacher model")
-    parser.add_argument('--lmd', default=10, type=float, help="kd loss weight")
-    parser.add_argument('--cuda', default=0, type=int, help="cuda device")
-    parser.add_argument('--ckpt', default='log/gauss3_init_roma100_mask_l1_3/checkpoint-best.pth', type=str, help="resume from checkpoint")
+    parser.add_argument('--teacher_ckpt', default="checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt_new.pth", type=str, help="path to the teacher model")
+    parser.add_argument('--lmd', default=30, type=float, help="kd loss weight")
+    parser.add_argument('--cuda', default=7, type=int, help="cuda device")
+    parser.add_argument('--ckpt', default='log/sl_kd/checkpoint-best.pth', type=str, help="resume from checkpoint")
     parser.add_argument('--batch_size', default=8, type=int, help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
+    parser.add_argument('--gt', default=True, action='store_true', help="Use ground truth depth")
     parser.add_argument('--kd_enc', default=True, type=bool)
     parser.add_argument('--kd_out', default=False, action='store_true', help="knowledge distillation (output)")
     parser.add_argument('--roma', default=1, action='store_true', help="Use RoMa")
-    parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
+    parser.add_argument('--encoder_only', default=False, action='store_true', help="Train only the encoder")
     parser.add_argument('--gauss_std', default=(1,3,6,9), help="Gaussian noise std")
     parser.add_argument('--asimmetric', default=False, action='store_true', help="Asymmetric loss")
-    parser.add_argument('--decoder_size', default='base', type=str, help="Decoder size")
+    parser.add_argument('--decoder_size', default='small', type=str, help="Decoder size")
     return parser
-
+ 
 
 def main(args):
     # SETUP
@@ -60,13 +61,23 @@ def main(args):
     # wandb.init(project='KDUSt3R', name=args.ckpt.split('/')[-2], config=vars(args))   
 
     # DATA
-    # TEST_DATA =  f"Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    # TEST_DATA += f"+ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
+    TEST_DATA = f"1000 @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std})" # 0.06 0.40
+    TEST_DATA += f"+ 1000 @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/misc/co3d_processed_xl', resolution=224, seed=777, gauss_std={args.gauss_std})" # 0.09 0.48
+    TEST_DATA += f"+ 1000 @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std})" # 0.35 0.73
     # TEST_DATA += f"+ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    TEST_DATA = f"DTU(split='train', ROOT='/ssd1/sa58728/dust3r/data/dtu_processed_old', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    TEST_DATA += f"+ 1000@Scannet(split='train', ROOT='/ssd1/sa58728/dust3r/data/scannet_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    # TEST_DATA = f"BlendedMVS(split='val', ROOT='/ssd1/sa58728/dust3r/data/blendedmvs_processed/', resolution=224, seed=777, gauss_std={args.gauss_std})"
-    # TEST_DATA = f"MegaDepth(split='test', ROOT='/ssd1/sa58728/dust3r/data/megadepth/', resolution=224, seed=777, gauss_std={args.gauss_std})"
+
+    TEST_DATA += f"+ 1000@DTU(split='train', ROOT='/ssd1/sa58728/dust3r/data/dtu_processed_old', resolution=224, seed=777, gauss_std={args.gauss_std})" # 0.22 3.56
+    TEST_DATA += f"+ 1000@Scannet(split='train', ROOT='/ssd1/sa58728/dust3r/data/scannet_processed', resolution=224, seed=777, gauss_std={args.gauss_std})" # 0.06 0.09
+    TEST_DATA +=  f"+ 1000@BlendedMVS(split='val', ROOT='/ssd1/sa58728/dust3r/data/blendedmvs_processed', resolution=224, seed=777, gauss_std={args.gauss_std})" # 0.15 3.78
+    TEST_DATA += f"+ 1000@MegaDepth(split='test', ROOT='/ssd1/sa58728/dust3r/data/megadepth_processed/', resolution=224, seed=777, gauss_std={args.gauss_std})" # 0.05 0.45
+
+    TEST_DATA +=  f"+ 1000 @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/misc/co3d_processed', resolution=224, seed=777, gauss_std={args.gauss_std})" # 0.47
+    # TEST_DATA += f" + 1000 @ MegaDepth(split='test', ROOT='/ssd1/sa58728/dust3r/data/megadepth_processed', resolution=224, seed=777, gauss_std={args.gauss_std})" # 0.46
+    # TEST_DATA += f" + 1000 @ BlendedMVS(split='val', ROOT='/ssd1/sa58728/dust3r/data/blendedmvs_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
+    # TEST_DATA += f"+ 1000 @ ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std=3)"
+    TEST_DATA += f"+ 1000 @ DTU(split='test', ROOT='/ssd1/sa58728/dust3r/data/dtu_processed_new', resolution=224, seed=777, gauss_std=3)" # 0.23 3.38
+    TEST_DATA += f"+ 1000 @ ARKitScenes(split='train', ROOT='/ssd1/sa58728/dust3r/data/arkitscenes_processed', resolution=224, seed=777, gauss_std=3)" # 0.12 0.13
+
 
     data_loader_test = {dataset.split('(')[0]: build_dataset(dataset, args.batch_size, args.num_workers, test=True)
                         for dataset in TEST_DATA.split('+')}
@@ -87,15 +98,15 @@ def main(args):
             model, device_ids=[args.gpu], find_unused_parameters=True, static_graph=True)
         
     # CRITERION
-    TEST_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd_out}, asimmetric={args.asimmetric}), alpha=0.2) + \
-                       Regr3D_ScaleShiftInv(L21, gt_scale=True, kd={args.kd_out}, roma={args.roma}, \
+    TEST_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', asimmetric={args.asimmetric}), alpha=0.2) + \
+                       Regr3D_ScaleShiftInv(L21, gt_scale=True, roma={args.roma}, \
                        asimmetric={args.asimmetric}, device=device)"
     test_criterion = eval(TEST_CRITERION).to(device)
 
     # TEST
     for test_name, testset in data_loader_test.items():
         print(test_name)
-        test_one_epoch(model, test_criterion, testset, device, 0, args=args, teacher=teacher, test_name=test_name)
+        test_one_epoch(teacher, test_criterion, testset, device, 0, args=args, teacher=teacher, test_name=test_name) #################################################################
         
         
 @torch.no_grad()
@@ -113,7 +124,7 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         data_loader.sampler.set_epoch(epoch)
 
     for _, batch in tqdm(enumerate(data_loader), total=len(data_loader)):
-        loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=args.kd_enc, 
+        loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=args.kd_enc, gt=args.gt,
                                        ret='loss', kd_enc=args.kd_enc, kd_out=args.kd_out, teacher=teacher, lmd=args.lmd, roma=args.roma)
         loss_value, loss_details = loss_tuple
         metric_logger.update(loss=float(loss_value), **loss_details)

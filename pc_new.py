@@ -9,29 +9,30 @@ from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
 from dust3r.utils.device import to_numpy
 from dust3r.model import AsymmetricCroCo3DStereo, inf
 
-ENCODER_ONLY = True # if True, use teacher's decoder and student's encoder
-CKPT = f'log/gauss3_init_roma100_mask_l1_30/checkpoint-best.pth' # student's checkpoint
+ENCODER_ONLY = False # if True, use teacher's decoder and student's encoder
+CKPT = f'log/sl/checkpoint-best.pth' # gauss3_roma100_init_mask_l1
 TEACHER_CKPT = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth" # teacher's checkpoint
-TEST_SUBSETS = ['co3d_new', 'co3d_test_1', 'co3d_test_2', 'croco', 'dtu', '1', '2', '3'] # image pairs to test
-
+TEST_SUBSETS = ['co3d_new', 'co3d_test_1', 'co3d_test_2', 'co3d_train_1', 'co3d_train_2'] # image pairs to test
+DECODER_SIZE = 'small' # 'base', 'tiny', 'small'
 
 def main():
-
     device = 'cpu'
     batch_size = 1
     schedule = 'cosine'
     lr = 0.01
     niter = 300
 
-    if ENCODER_ONLY:
+    # MODEL
+    if ENCODER_ONLY or DECODER_SIZE == 'base':
         model_dims = [384, 6, 768, 12]
-    else:
+    elif DECODER_SIZE == 'tiny':
         model_dims = [384, 6, 192, 3]
+    elif DECODER_SIZE == 'small':
+        model_dims = [384, 6, 384, 6]
     MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
                 output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
                 enc_embed_dim={}, enc_depth=12, enc_num_heads={}, dec_embed_dim={}, dec_depth=12, dec_num_heads={}, adapter=True)".format(*model_dims)
     teacher, model = build_model_enc_dec(MODEL_KD, device)
-
 
     for s in TEST_SUBSETS:
         img_folder_path = f'test/{s}/'
@@ -85,7 +86,7 @@ def main():
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(pts_4_3dgs)
         pcd.colors = o3d.utility.Vector3dVector(color_4_3dgs)
-        o3d.io.write_point_cloud(f"{img_folder_path}{s}_kd.ply", pcd)
+        o3d.io.write_point_cloud(f"{img_folder_path}{s}_{CKPT.split('/')[-2]}.ply", pcd)
 
 
 def mseloss(pred_feats, target_feats):
@@ -109,11 +110,13 @@ def build_model_enc_dec(model_str, device):
     model_kd.to(device)
     model_kd.eval()
 
-    ckpt = torch.load(CKPT, map_location=device)
-    model_kd.load_state_dict(ckpt['model'], strict=True)
-    model_kd.train()
+    if CKPT:
+        print(f"Loading checkpoint from {CKPT}")
+        ckpt = torch.load(CKPT, map_location=device)
+        model_kd.load_state_dict(ckpt['model'], strict=True)
+        model_kd.train()
 
-    if ENCODER_ONLY:
+    if ENCODER_ONLY or DECODER_SIZE == 'base':
         model.patch_embed = deepcopy(model_kd.patch_embed)
         model.mask_generator = deepcopy(model_kd.mask_generator)
         model.rope = deepcopy(model_kd.rope)

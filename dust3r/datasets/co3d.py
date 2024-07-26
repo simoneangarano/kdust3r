@@ -20,10 +20,11 @@ from dust3r.utils.image import imread_cv2
 
 
 class Co3d(BaseStereoViewDataset):
-    def __init__(self, mask_bg=True, features=False, *args, ROOT, **kwargs):
+    def __init__(self, mask_bg=True, features=False, kd=False, *args, ROOT, **kwargs):
         self.ROOT = ROOT
         super().__init__(*args, **kwargs)
         assert mask_bg in (True, False, 'rand')
+        self.kd = kd
         self.mask_bg = mask_bg
         self.features = features
 
@@ -96,28 +97,41 @@ class Co3d(BaseStereoViewDataset):
             impath = osp.join(self.ROOT, obj, instance, 'images', f'frame{view_idx:06n}.jpg')
 
             # load camera params
-            input_metadata = np.load(impath.replace('jpg', 'npz'))
-            camera_pose = input_metadata['camera_pose'].astype(np.float32)
-            intrinsics = input_metadata['camera_intrinsics'].astype(np.float32)
+            try:
+                input_metadata = np.load(impath.replace('jpg', 'npz'))
+                camera_pose = input_metadata['camera_pose'].astype(np.float32)
+                intrinsics = input_metadata['camera_intrinsics'].astype(np.float32)
+                max_depth = input_metadata['maximum_depth']
+            except:
+                camera_pose = np.eye(4, dtype=np.float32)
+                intrinsics = np.eye(3, dtype=np.float32)
+                max_depth = 1.0
+                self.kd = True
 
             # load image and depth
             rgb_image = imread_cv2(impath)
-            depthmap = imread_cv2(impath.replace('images', 'depths') + '.geometric.png', cv2.IMREAD_UNCHANGED)
-            depthmap = (depthmap.astype(np.float32) / 65535) * np.nan_to_num(input_metadata['maximum_depth'])
-
+            try:
+                depthmap = imread_cv2(impath.replace('images', 'depths') + '.geometric.png', cv2.IMREAD_UNCHANGED)
+                depthmap = (depthmap.astype(np.float32) / 65535) * np.nan_to_num(max_depth)
+            except:
+                depthmap = np.zeros_like(rgb_image, dtype=np.float32)
+            
             if mask_bg:
                 # load object mask
                 maskpath = osp.join(self.ROOT, obj, instance, 'masks', f'frame{view_idx:06n}.png')
-                maskmap = imread_cv2(maskpath, cv2.IMREAD_UNCHANGED).astype(np.float32)
-                maskmap = (maskmap / 255.0) > 0.1
-
+                try:
+                    maskmap = imread_cv2(maskpath, cv2.IMREAD_UNCHANGED).astype(np.float32)
+                    maskmap = (maskmap / 255.0) > 0.1
+                except:
+                    maskmap = np.ones_like(rgb_image, dtype=np.float32)
                 # update the depthmap with mask
                 depthmap *= maskmap
 
-            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
+            if not self.kd:
+                rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
                 rgb_image, depthmap, intrinsics, resolution, rng=rng, info=impath)
 
-            num_valid = (depthmap > 0.0).sum()
+            # num_valid = (depthmap > 0.0).sum()
             # if num_valid == 0:
             #     # problem, invalidate image and retry
             #     # print(f"Invalid image {impath} for {obj} {instance} {resolution} {im_idx}")
@@ -126,23 +140,35 @@ class Co3d(BaseStereoViewDataset):
             #     continue
 
             # load features
-            if self.features:
-                features = np.load(impath.replace('jpg', 'npy'))
-                points = 0
-            else:
-                features, points = 0, 0
+            # if self.features:
+            #     features = np.load(impath.replace('jpg', 'npy'))
+            #     points = 0
+            # else:
+            #     features, points = 0, 0
 
-            views.append(dict(
-                img=rgb_image,
-                depthmap=depthmap,
-                camera_pose=camera_pose,
-                camera_intrinsics=intrinsics,
-                dataset='Co3d_v2',
-                label=osp.join(obj, instance),
-                instance=osp.split(impath)[1],
-                img_path=impath,
-                points=points,
-                features=features,
-                index=int(im_idx)
-            ))
+            if self.kd:
+                views.append(dict(
+                    img=rgb_image,
+                    dataset='Co3d_v2',
+                    label=osp.join(obj, instance),
+                    instance=osp.split(impath)[1],
+                    img_path=impath,
+                    # points=points,
+                    # features=features,
+                    index=int(im_idx)
+                ))
+            else:
+                views.append(dict(
+                    img=rgb_image,
+                    depthmap=depthmap,
+                    camera_pose=camera_pose,
+                    camera_intrinsics=intrinsics,
+                    dataset='Co3d_v2',
+                    label=osp.join(obj, instance),
+                    instance=osp.split(impath)[1],
+                    img_path=impath,
+                    # points=points,
+                    # features=features,
+                    index=int(im_idx)
+                ))
         return views

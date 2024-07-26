@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Sized
 from copy import deepcopy
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"
+os.environ['CUDA_VISIBLE_DEVICES'] = "4,5,6,7"
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
@@ -53,19 +53,22 @@ def get_args_parser():
     parser.add_argument('--keep_freq', default=1, type=int, help='frequence (number of epochs) to save checkpoint in checkpoint-%d.pth')
     parser.add_argument('--print_freq', default=200, type=int, help='frequence (number of iterations) to print infos while training')
     # kd
-    parser.add_argument('--kd_enc', default=True, action='store_true', help="knowledge distillation (features)")
-    parser.add_argument('--kd_out', default=True, action='store_true', help="knowledge distillation (output)")
-    parser.add_argument('--lmd', default=30, type=float, help="kd loss weight")
-    parser.add_argument('--output_dir', default='log/gauss3_init_roma100_mask_l1_30', type=str, help="path where to save the output")
-    parser.add_argument('--ckpt', default="checkpoints/small_base.pth", type=str, help="resume from checkpoint") # "checkpoints/small_base.pth"
-    parser.add_argument('--roma', default=100, help="Use RoMa")
+    parser.add_argument('--gt', default=True, action='store_true', help="use ground truth for kd")
+    parser.add_argument('--kd_enc', default=False, action='store_true', help="knowledge distillation (features)")
+    parser.add_argument('--kd_out', default=False, action='store_true', help="knowledge distillation (output)")
+    parser.add_argument('--lmd', default=1, type=float, help="kd loss weight")
+    parser.add_argument('--lmd_out', default=0.1, type=float, help="kd out loss weight")
+    parser.add_argument('--output_dir', default='log/sl_kdencdec_roma_lin', type=str, help="path where to save the output")
+    parser.add_argument('--ckpt', default=None, type=str, help="resume from checkpoint") # log/sl_kd/checkpoint-2.pth 'checkpoints/small_small.pth'
+    parser.add_argument('--roma', default=None, help="Use RoMa")
     parser.add_argument('--roma_thr', default=0.5, help="RoMa threshold")
-    parser.add_argument('--encoder_only', default=True, action='store_true', help="Train only the encoder")
-    parser.add_argument('--decoder_size', default='base', type=str, help="Decoder size")
-    parser.add_argument('--gauss_std', default=3, type=float, help="Gaussian noise standard deviation")
-    parser.add_argument('--gauss_std_test', default=(1,3,6,9), help="Gaussian noise standard deviation")
+    parser.add_argument('--conf_thr', default=2, help="confidence threshold")
+    parser.add_argument('--encoder_only', default=False, action='store_true', help="Train only the encoder")
+    parser.add_argument('--decoder_size', default='small', type=str, help="Decoder size")
+    parser.add_argument('--gauss_std', default=0, type=float, help="Gaussian noise standard deviation") #3
+    parser.add_argument('--gauss_std_test', default=0, help="Gaussian noise standard deviation") #(1,3,6,9)
     parser.add_argument('--start_epoch', default=0, type=int, help="Start epoch")
-    return parser
+    return parser 
 
 
 def main(args):
@@ -87,17 +90,26 @@ def main(args):
         cudnn.benchmark = True
 
     # DATASET
-    N, N_TEST = 100000, 1000
-    TRAIN_DATA = f"{N} @ Co3d(split='train', ROOT='/ssd1/wenyan/co3d_2_cat_processed', \
-        aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
-    TRAIN_DATA += f"+ {N} @ ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', \
-        aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
-    TRAIN_DATA += f"+ {N} @ DL3DV(split='train', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', \
-        aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
-    TEST_DATA =  f"{N_TEST} @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
-    TEST_DATA += f" + {N_TEST} @ ScanNet(split='test', ROOT='/ssd1/wenyan/scannetpp_processed', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
-    TEST_DATA += f" + {N_TEST} @ DL3DV(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
-    # TEST_DATA += f" + {N_TEST} @ DTU(split='test', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
+    N, N_TEST = 500000, 1000
+    # TRAIN_DATA = f"{N} @ Co3d(split='train', ROOT='/ssd1/sa58728/dust3r/data/misc/co3d_processed', \
+    #                aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
+    # TRAIN_DATA += f"+ {N} @ MegaDepth(split='train', ROOT='/ssd1/sa58728/dust3r/data/megadepth_processed', \
+    #                aug_crop=16, resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
+    TRAIN_DATA = f"{N} @ ARKitScenes(split='train', ROOT='/ssd1/sa58728/dust3r/data/arkitscenes_processed', resolution=224, seed=777, gauss_std=3)"
+    # TRAIN_DATA += f"+ {N} @ BlendedMVS(split='train', ROOT='/ssd1/sa58728/dust3r/data/blendedmvs_processed', \
+    #                aug_crop=16, resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
+    # TRAIN_DATA += f"+ ScanNet(split='train', ROOT='/ssd1/wenyan/scannetpp_processed', \
+    #     aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
+    # TRAIN_DATA += f"+ {N} @ DL3DV(split='train', ROOT='/ssd1/sa58728/dust3r/data/DL3DV-10K', \
+    #     aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter, gauss_std={args.gauss_std})"
+    
+    TEST_DATA = f"{N_TEST}@Scannet(split='train', ROOT='/ssd1/sa58728/dust3r/data/scannet_processed', resolution=224, seed=777, gauss_std={args.gauss_std})" # 0.09
+    TEST_DATA += f"+ {N_TEST} @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/co3d_subset_processed', resolution=224, seed=777, gauss_std={args.gauss_std})"
+
+    # TEST_DATA =  f"{N_TEST} @ Co3d(split='test', ROOT='/ssd1/sa58728/dust3r/data/misc/co3d_processed', resolution=224, seed=777, gauss_std={args.gauss_std_test})"              # 0.47
+    # TEST_DATA += f" + {N_TEST} @ MegaDepth(split='test', ROOT='/ssd1/sa58728/dust3r/data/megadepth_processed', resolution=224, seed=777, gauss_std={args.gauss_std_test})"      # 0.46
+    # TEST_DATA += f"+ {N_TEST} @ ARKitScenes(split='test', ROOT='/ssd1/sa58728/dust3r/data/arkitscenes_processed', resolution=224, seed=777, gauss_std={args.gauss_std_test})"   # 0.12
+    # TEST_DATA += f" + {N_TEST} @ BlendedMVS(split='val', ROOT='/ssd1/sa58728/dust3r/data/blendedmvs_processed', resolution=224, seed=777, gauss_std={args.gauss_std_test})"
 
     data_loader_train = build_dataset(TRAIN_DATA, args.batch_size, args.num_workers, test=False)
     data_loader_test = {dataset.split('(')[0]: build_dataset(dataset, args.batch_size, args.num_workers, test=True)
@@ -110,15 +122,15 @@ def main(args):
         model_dims = [384, 6, 192, 3]
     elif args.decoder_size == 'small':
         model_dims = [384, 6, 384, 6]
-    MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', \
+    MODEL_KD = "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='dpt', patch_embed_cls='ManyAR_PatchEmbed', \
                 output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), \
                 enc_embed_dim={}, enc_depth=12, enc_num_heads={}, dec_embed_dim={}, dec_depth=12, dec_num_heads={}, adapter=True)".format(*model_dims)
     teacher, model = build_model_enc_dec(MODEL_KD, device, args)
 
     # CRITERION
-    TRAIN_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd_out}, roma={args.roma}, roma_thr={args.roma_thr}, device=device), alpha=0.2)"
-    TEST_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', kd={args.kd_out}, roma={args.roma}, roma_thr={args.roma_thr}, device=device), alpha=0.2) + \
-                       Regr3D_ScaleShiftInv(L21, gt_scale=True, kd={args.kd_out}, roma={args.roma}, roma_thr={args.roma_thr}, device=device)"
+    TRAIN_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', roma={args.roma}, roma_thr={args.roma_thr}, conf_thr={args.conf_thr}, device=device), alpha=0.2)"
+    TEST_CRITERION = f"ConfLoss(Regr3D(L21, norm_mode='avg_dis', roma={args.roma}, roma_thr={args.roma_thr}, conf_thr={args.conf_thr}, device=device), alpha=0.2) + \
+                       Regr3D_ScaleShiftInv(L21, gt_scale=True, roma={args.roma}, roma_thr={args.roma_thr}, conf_thr={args.conf_thr}, device=device)"
     train_criterion = eval(TRAIN_CRITERION).to(device)
     test_criterion = eval(TEST_CRITERION).to(device)
     if args.distributed:
@@ -266,8 +278,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module, data_loa
             misc.adjust_learning_rate(optimizer, epoch_f, args)
 
         loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=args.kd_enc,
-                                       use_amp=bool(args.amp), ret='loss', kd_enc=args.kd_enc, kd_out=args.kd_out,
-                                       teacher=teacher, lmd=args.lmd, roma=roma)
+                                       use_amp=bool(args.amp), ret='loss', gt=args.gt, kd_enc=args.kd_enc, kd_out=args.kd_out,
+                                       teacher=teacher, lmd=args.lmd, lmd_out=args.lmd_out, roma=roma)
         loss, loss_details = loss_tuple 
         loss_value = float(loss)
 
@@ -351,7 +363,7 @@ def test_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module, data_load
 
     for _, batch in enumerate(data_loader):
         loss_tuple = loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=True, features=args.kd_enc,
-                                       use_amp=bool(args.amp), ret='loss', kd_enc=args.kd_enc, kd_out=args.kd_out, roma=roma,
+                                       use_amp=bool(args.amp), ret='loss', gt=args.gt, kd_enc=args.kd_enc, kd_out=args.kd_out, roma=roma,
                                        teacher=teacher, lmd=args.lmd)
         loss_value, loss_details = loss_tuple  # criterion returns two values
         metric_logger.update(loss=float(loss_value), **loss_details)

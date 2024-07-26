@@ -2,136 +2,122 @@
 # Licensed under CC BY-NC-SA 4.0 (non-commercial use only).
 #
 # --------------------------------------------------------
-# Dataloader for preprocessed Co3d_v2
-# dataset at https://github.com/facebookresearch/co3d - Creative Commons Attribution-NonCommercial 4.0 International
-# See datasets_preprocess/preprocess_co3d.py
+# Dataloader for preprocessed MegaDepth
+# dataset at https://www.cs.cornell.edu/projects/megadepth/
+# See datasets_preprocess/preprocess_megadepth.py
 # --------------------------------------------------------
 import os.path as osp
-import json
-import itertools
-from collections import deque
-
-import cv2, os
 import numpy as np
-import torch
 
 from dust3r.datasets.base.base_stereo_view_dataset import BaseStereoViewDataset
 from dust3r.utils.image import imread_cv2
 
 
 class MegaDepth(BaseStereoViewDataset):
-    def __init__(self, mask_bg=True, features=False, *args, ROOT, **kwargs):
+    def __init__(self, *args, split, ROOT, **kwargs):
         self.ROOT = ROOT
         super().__init__(*args, **kwargs)
-        assert mask_bg in (True, False, 'rand')
-        self.mask_bg = mask_bg
-        self.features = features
+        self.loaded_data = self._load_data(self.split)
 
-        # load all scenes
-        with open(osp.join(self.ROOT, f'selected_seqs_{self.split}.json'), 'r') as f:
-            self.scenes = json.load(f)
-            self.scenes = {k: v for k, v in self.scenes.items() if len(v) > 0}
-            # self.scenes = {(k, k2): v2 for k, v in self.scenes.items()
-            #                for k2, v2 in v.items()}
-        self.scene_list = list(self.scenes.keys())
+        if self.split is None:
+            pass
+        elif self.split == 'train':
+            self.select_scene(('0015', '0022'), opposite=True)
+        elif self.split == 'val':
+            self.select_scene(('0015', '0022'))
+        else:
+            raise ValueError(f'bad {self.split=}')
 
-        # for each scene, we have 100 images ==> 360 degrees (so 25 frames ~= 90 degrees)
-        # we prepare all combinations such that i-j = +/- [5, 10, .., 90] degrees
-        self.combinations = [(i, j)
-                             for i, j in itertools.combinations(range(100), 2)
-                             if 0 < abs(i-j) <= 30 and abs(i-j) % 5 == 0]
-
-        self.invalidate = {scene: {} for scene in self.scene_list}
+    def _load_data(self, split):
+        with np.load(osp.join(self.ROOT, 'megadepth_pairs.npz')) as data:
+            self.all_scenes = data['scenes']
+            self.all_images = data['images']
+            self.pairs = data['pairs']
 
     def __len__(self):
-        return len(self.scene_list) * len(self.combinations)
+        return len(self.pairs)
 
-    def _get_views(self, idx, resolution, rng):
-        # choose a scene
-        obj = self.scene_list[idx // len(self.combinations)]
-        image_pool = self.scenes[obj]
-        im1_idx, im2_idx = self.combinations[idx % len(self.combinations)]
+    def get_stats(self):
+        return f'{len(self)} pairs from {len(self.all_scenes)} scenes'
 
-        # add a bit of randomness
-        last = len(image_pool)-1
+    def select_scene(self, scene, *instances, opposite=False):
+        scenes = (scene,) if isinstance(scene, str) else tuple(scene)
+        scene_id = [s.startswith(scenes) for s in self.all_scenes]
+        assert any(scene_id), 'no scene found'
 
-        if resolution not in self.invalidate[obj]:  # flag invalid images
-            self.invalidate[obj][resolution] = [False for _ in range(len(image_pool))]
+        valid = np.in1d(self.pairs['scene_id'], np.nonzero(scene_id)[0])
+        if instances:
+            image_id = [i.startswith(instances) for i in self.all_images]
+            image_id = np.nonzero(image_id)[0]
+            assert len(image_id), 'no instance found'
+            # both together?
+            if len(instances) == 2:
+                valid &= np.in1d(self.pairs['im1_id'], image_id) & np.in1d(self.pairs['im2_id'], image_id)
+            else:
+                valid &= np.in1d(self.pairs['im1_id'], image_id) | np.in1d(self.pairs['im2_id'], image_id)
 
-        # decide now if we mask the bg
-        # mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2)) # 50% chance
+        if opposite:
+            valid = ~valid
+        assert valid.any()
+        self.pairs = self.pairs[valid]
+
+    def _get_views(self, pair_idx, resolution, rng):
+        scene_id, im1_id, im2_id, score = self.pairs[pair_idx]
+
+        scene, subscene = self.all_scenes[scene_id].split()
+        seq_path = osp.join(self.ROOT, scene, subscene)
 
         views = []
-        imgs_idxs = [max(0, min(im_idx + rng.integers(-4, 5), last)) for im_idx in [im2_idx, im1_idx]]
-        imgs_idxs = deque(imgs_idxs)
-        while len(imgs_idxs) > 0:  # some images (few) have zero depth
-            im_idx = imgs_idxs.pop()
 
+        for im_id in [im1_id, im2_id]:
+            img = self.all_images[im_id]
             try:
-                if self.invalidate[obj][resolution][im_idx]:
-                    # search for a valid image
-                    random_direction = 2 * rng.choice(2) - 1
-                    for offset in range(1, len(image_pool)):
-                        tentative_im_idx = (im_idx + (random_direction * offset)) % len(image_pool)
-                        if not self.invalidate[obj][resolution][tentative_im_idx]:
-                            im_idx = tentative_im_idx
-                            break
-            except:
-                print(obj, resolution, im_idx)
-                raise ValueError
-            view_idx = image_pool[im_idx]
+                image = imread_cv2(osp.join(seq_path, img + '.jpg'))
+                depthmap = imread_cv2(osp.join(seq_path, img + ".exr"))
+                camera_params = np.load(osp.join(seq_path, img + ".npz"))
+            except Exception as e:
+                raise OSError(f'cannot load {img}, got exception {e}')
 
-            if os.path.exists(osp.join(self.ROOT, obj, 'dense0')):
-                impath = osp.join(self.ROOT, obj, 'dense0/imgs', f'{view_idx}.jpg')
-                rgb_image = imread_cv2(impath)
-            else:
-                impath = osp.join(self.ROOT, obj, 'dense1/imgs', f'{view_idx}.jpg')
-                rgb_image = imread_cv2(impath)            
-            
-            # load camera params
-            # input_metadata = np.load(impath.replace('jpg', 'npz'))
-            # camera_pose = input_metadata['camera_pose'].astype(np.float32)
-            intrinsics = np.eye(3, dtype=np.float32)
+            intrinsics = np.float32(camera_params['intrinsics'])
+            camera_pose = np.float32(camera_params['cam2world'])
 
-            # load image and depth
-            # depthmap = imread_cv2(impath.replace('images', 'depths') + '.geometric.png', cv2.IMREAD_UNCHANGED)
-            # depthmap = (depthmap.astype(np.float32) / 65535) * np.nan_to_num(input_metadata['maximum_depth'])
-
-            # if mask_bg:
-            #     # load object mask
-            #     maskpath = osp.join(self.ROOT, obj, instance, 'masks', f'frame{view_idx:06n}.png')
-            #     maskmap = imread_cv2(maskpath, cv2.IMREAD_UNCHANGED).astype(np.float32)
-            #     maskmap = (maskmap / 255.0) > 0.1
-
-            #     # update the depthmap with mask
-            #     depthmap *= maskmap
-
-            rgb_image = self._crop_resize_image(
-                rgb_image, resolution, rng=rng, info=impath, intrinsics=intrinsics)
-
-            # num_valid = (depthmap > 0.0).sum()
-            # if num_valid == 0:
-            #     # problem, invalidate image and retry
-            #     # print(f"Invalid image {impath} for {obj} {instance} {resolution} {im_idx}")
-            #     self.invalidate[obj, instance][resolution][im_idx] = True
-            #     imgs_idxs.append(im_idx)
-            #     continue
-
-            # load features
-            if self.features:
-                features = np.load(impath.replace('jpg', 'npy'))
-                points = 0
-            else:
-                features, points = 0, 0
+            image, depthmap, intrinsics = self._crop_resize_if_necessary(
+                image, depthmap, intrinsics, resolution, rng, info=(seq_path, img))
 
             views.append(dict(
-                img=rgb_image,
+                img=image,
+                depthmap=depthmap,
+                camera_pose=camera_pose,  # cam2world
                 camera_intrinsics=intrinsics,
-                dataset='MegaDepth_v1',
-                label=osp.join(obj),
-                instance=osp.split(impath)[1],
-                img_path=impath,
-                points=points,
-                features=features
-            ))
+                dataset='MegaDepth',
+                label=osp.relpath(seq_path, self.ROOT),
+                instance=img))
+
         return views
+
+
+if __name__ == "__main__":
+    from dust3r.datasets.base.base_stereo_view_dataset import view_name
+    from dust3r.viz import SceneViz, auto_cam_size
+    from dust3r.utils.image import rgb
+
+    dataset = MegaDepth(split='train', ROOT="data/megadepth_processed", resolution=224, aug_crop=16)
+
+    for idx in np.random.permutation(len(dataset)):
+        views = dataset[idx]
+        assert len(views) == 2
+        print(idx, view_name(views[0]), view_name(views[1]))
+        viz = SceneViz()
+        poses = [views[view_idx]['camera_pose'] for view_idx in [0, 1]]
+        cam_size = max(auto_cam_size(poses), 0.001)
+        for view_idx in [0, 1]:
+            pts3d = views[view_idx]['pts3d']
+            valid_mask = views[view_idx]['valid_mask']
+            colors = rgb(views[view_idx]['img'])
+            viz.add_pointcloud(pts3d, colors, valid_mask)
+            viz.add_camera(pose_c2w=views[view_idx]['camera_pose'],
+                           focal=views[view_idx]['camera_intrinsics'][0, 0],
+                           color=(idx * 255, (1 - idx) * 255, 0),
+                           image=colors,
+                           cam_size=cam_size)
+        viz.show()

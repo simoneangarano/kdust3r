@@ -153,27 +153,32 @@ class Regr3D (Criterion, MultiLoss):
               = (RT21 @ pred_D2) - (RT1^-1 @ RT2 @ D2)
     """
 
-    def __init__(self, criterion, norm_mode='avg_dis', gt_scale=False, kd=False, roma=None, roma_thr=0.5,
+    def __init__(self, criterion, norm_mode='avg_dis', gt_scale=False, roma=None, roma_thr=0.5, conf_thr=2,
                  debug=False, asimmetric=False, device='cuda'):
         super().__init__(criterion)
         self.norm_mode = norm_mode
         self.gt_scale = gt_scale
-        self.kd = kd
         self.roma = roma
         self.roma_thr = roma_thr
+        self.conf_thr = conf_thr
         self.debug = debug
         self.asimmetric = asimmetric
         if self.roma:
             self.roma = roma_outdoor(device=device, coarse_res=224, upsample_res=224)
 
-    def get_all_pts3d(self, gt1, gt2, pred1, pred2, dist_clip=None):
-        if self.kd:
+    def get_all_pts3d(self, gt1, gt2, pred1, pred2, dist_clip=None, kd=False):
+        if kd:
             valid1 = valid2 = torch.ones_like(gt1['pts3d'][..., 0], dtype=torch.bool)
+
+            pr_pts1 = get_pred_pts3d(gt=None, pred=pred1, use_pose=False)
+            pr_pts2 = get_pred_pts3d(gt=None, pred=pred2, use_pose=True)
+            gt_pts1 = get_pred_pts3d(gt=None, pred=gt1, use_pose=False)
+            gt_pts2 = get_pred_pts3d(gt=None, pred=gt2, use_pose=True)
+
         else:
             valid1 = gt1['valid_mask'].clone()
             valid2 = gt2['valid_mask'].clone()
 
-        if not self.kd:
             # everything is normalized w.r.t. camera of view1
             in_camera1 = inv(gt1['camera_pose'])
             gt_pts1 = geotrf(in_camera1, gt1['pts3d'])  # B,H,W,3
@@ -189,13 +194,8 @@ class Regr3D (Criterion, MultiLoss):
             pr_pts1 = get_pred_pts3d(gt1, pred1, use_pose=False)
             pr_pts2 = get_pred_pts3d(gt2, pred2, use_pose=True)
 
-        else:
-            pr_pts1 = get_pred_pts3d(gt=None, pred=pred1, use_pose=False)
-            pr_pts2 = get_pred_pts3d(gt=None, pred=pred2, use_pose=True)
-            gt_pts1 = get_pred_pts3d(gt=None, pred=gt1, use_pose=False)
-            gt_pts2 = get_pred_pts3d(gt=None, pred=gt2, use_pose=True)
         
-        # normalize 3d points
+        # Normalize 3d points
         if self.norm_mode:
             pr_pts1, pr_pts2 = normalize_pointcloud(pr_pts1, pr_pts2, self.norm_mode, valid1, valid2)
         if self.norm_mode and (not self.gt_scale):
@@ -246,7 +246,7 @@ class Regr3D (Criterion, MultiLoss):
 
             # mask
             cert = (certainty.reshape(-1,H,2*W)[:,:,:W].reshape(-1,H*W) > self.roma_thr).float() # 
-            conf = (conf > 2).reshape(-1,H*W).float() # .reshape(-1,H*W)
+            conf = (conf > self.conf_thr).reshape(-1,H*W).float() # .reshape(-1,H*W) ###################################################
 
             # overlap
             # cert > 0.5 must have more than 1% of the pixels to have enough overlap
@@ -349,10 +349,10 @@ class Regr3D_ShiftInv (Regr3D):
     """ Same than Regr3D but invariant to depth shift.
     """
 
-    def get_all_pts3d(self, gt1, gt2, pred1, pred2):
+    def get_all_pts3d(self, gt1, gt2, pred1, pred2, kd=False):
         # compute unnormalized points
         gt_pts1, gt_pts2, pred_pts1, pred_pts2, mask1, mask2, monitoring = \
-            super().get_all_pts3d(gt1, gt2, pred1, pred2)
+            super().get_all_pts3d(gt1, gt2, pred1, pred2, kd=kd)
 
         # compute median depth
         gt_z1, gt_z2 = gt_pts1[..., 2], gt_pts2[..., 2]
@@ -375,9 +375,9 @@ class Regr3D_ScaleInv (Regr3D):
         if gt_scale == True: enforce the prediction to take the same scale than GT
     """
 
-    def get_all_pts3d(self, gt1, gt2, pred1, pred2):
+    def get_all_pts3d(self, gt1, gt2, pred1, pred2, kd=False):
         # compute depth-normalized points
-        gt_pts1, gt_pts2, pred_pts1, pred_pts2, mask1, mask2, monitoring = super().get_all_pts3d(gt1, gt2, pred1, pred2)
+        gt_pts1, gt_pts2, pred_pts1, pred_pts2, mask1, mask2, monitoring = super().get_all_pts3d(gt1, gt2, pred1, pred2, kd=kd                          )
 
         # measure scene scale
         _, gt_scale = get_joint_pointcloud_center_scale(gt_pts1, gt_pts2, mask1, mask2)

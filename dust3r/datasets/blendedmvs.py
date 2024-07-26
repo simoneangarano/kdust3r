@@ -2,147 +2,115 @@
 # Licensed under CC BY-NC-SA 4.0 (non-commercial use only).
 #
 # --------------------------------------------------------
-# Dataloader for preprocessed Co3d_v2
-# dataset at https://github.com/facebookresearch/co3d - Creative Commons Attribution-NonCommercial 4.0 International
-# See datasets_preprocess/preprocess_co3d.py
+# Dataloader for preprocessed BlendedMVS
+# dataset at https://github.com/YoYo000/BlendedMVS
+# See datasets_preprocess/preprocess_blendedmvs.py
 # --------------------------------------------------------
 import os.path as osp
-import json
-import itertools
-from collections import deque
-import random
-import cv2
 import numpy as np
-import torch
 
 from dust3r.datasets.base.base_stereo_view_dataset import BaseStereoViewDataset
 from dust3r.utils.image import imread_cv2
 
 
-class BlendedMVS(BaseStereoViewDataset):
-    def __init__(self, mask_bg=True, features=False, *args, ROOT, **kwargs):
+class BlendedMVS (BaseStereoViewDataset):
+    """ Dataset of outdoor street scenes, 5 images each time
+    """
+
+    def __init__(self, *args, ROOT, split=None, **kwargs):
         self.ROOT = ROOT
         super().__init__(*args, **kwargs)
-        assert mask_bg in (True, False, 'rand')
-        self.mask_bg = mask_bg
-        self.features = features
+        self._load_data(split)
 
-        # load all scenes
-        with open(osp.join(self.ROOT, f'selected_seqs_{self.split}.json'), 'r') as f:
-            self.scenes = json.load(f)
-            self.scenes = {k: v for k, v in self.scenes.items() if len(v) > 0}
-            # self.scenes = {(k, k2): v2 for k, v in self.scenes.items()
-            #                for k2, v2 in v.items()}
-        self.scene_list = list(self.scenes.keys())
+    def _load_data(self, split):
+        pairs = np.load(osp.join(self.ROOT, 'blendedmvs_pairs.npy'))
+        if split is None:
+            selection = slice(None)
+        if split == 'train':
+            # select 90% of all scenes
+            selection = (pairs['seq_low'] % 10) > 0
+        if split == 'val':
+            # select 10% of all scenes
+            selection = (pairs['seq_low'] % 10) == 0
+        self.pairs = pairs[selection]
 
-        if isinstance(self.gauss_std, tuple) or self.gauss_std > 0:
-            self.combinations = [(i, j)
-                                for i, j in itertools.combinations(range(100), 2)
-                                if abs(i-j) == 3
-                                ]
-        else:
-            # for each scene, we have 100 images ==> 360 degrees (so 25 frames ~= 90 degrees)
-            # we prepare all combinations such that i-j = +/- [5, 10, .., 90] degrees
-            self.combinations = [(i, j)
-                                for i, j in itertools.combinations(range(100), 2)
-                                if 0 < abs(i-j) <= 30 and abs(i-j) % 5 == 0
-                                ]
-
-        self.invalidate = {scene: {} for scene in self.scene_list}
+        # list of all scenes
+        self.scenes = np.unique(self.pairs['seq_low'])  # low is unique enough
 
     def __len__(self):
-        return len(self.scene_list) * len(self.combinations)
+        return len(self.pairs)
 
-    def _get_views(self, idx, resolution, rng):
-        # choose a scene
-        instance = self.scene_list[idx // len(self.combinations)]
-        image_pool = self.scenes[instance]
-        im1_idx, im2_idx = self.combinations[idx % len(self.combinations)]
+    def get_stats(self):
+        return f'{len(self)} pairs from {len(self.scenes)} scenes'
 
-        # add a bit of randomness
-        last = len(image_pool)-1
+    def select_one_scene(self, scene, img1=None, img2=None):
+        scene_low = int(scene[-16:], 16)
+        valid = (self.pairs['seq_low'] == scene_low)
+        if img1:
+            valid &= (self.pairs['img1'] == int(img1))
+        if img2:
+            valid &= (self.pairs['img2'] == int(img2))
+        self.pairs = self.pairs[valid]
+        self._compute_pair_probas()
 
-        if resolution not in self.invalidate[instance]:  # flag invalid images
-            self.invalidate[instance][resolution] = [False for _ in range(len(image_pool))]
+    def _get_views(self, pair_idx, resolution, rng):
+        seqh, seql, img1, img2, score = self.pairs[pair_idx]
 
-        # decide now if we mask the bg
-        mask_bg = (self.mask_bg == True) or (self.mask_bg == 'rand' and rng.choice(2)) # 50% chance
+        seq = f"{seqh:08x}{seql:016x}"
+        seq_path = osp.join(self.ROOT, seq)
 
         views = []
-        if isinstance(self.gauss_std, tuple):
-            imgs_idxs = [max(0, min(im_idx + int(rng.normal(loc=0.0, scale=random.sample(self.gauss_std,1))), last)) for im_idx in [im2_idx, im1_idx]]
-        elif self.gauss_std > 0:
-            imgs_idxs = [max(0, min(im_idx + int(rng.normal(loc=0.0, scale=self.gauss_std)), last)) for im_idx in [im2_idx, im1_idx]]
-        else:
-            imgs_idxs = [max(0, min(im_idx + rng.integers(-4, 5), last)) for im_idx in [im2_idx, im1_idx]]
-        imgs_idxs = deque(imgs_idxs)
-        while len(imgs_idxs) > 0:  # some images (few) have zero depth
-            im_idx = imgs_idxs.pop()
 
-            try:
-                if self.invalidate[instance][resolution][im_idx]:
-                    # search for a valid image
-                    random_direction = 2 * rng.choice(2) - 1
-                    for offset in range(1, len(image_pool)):
-                        tentative_im_idx = (im_idx + (random_direction * offset)) % len(image_pool)
-                        if not self.invalidate[instance][resolution][tentative_im_idx]:
-                            im_idx = tentative_im_idx
-                            break
-            except:
-                print(instance, resolution, im_idx)
-                raise ValueError
-            view_idx = image_pool[im_idx]
+        for view_index in [img1, img2]:
+            impath = f"{view_index:08n}"
+            image = imread_cv2(osp.join(seq_path, impath + ".jpg"))
+            depthmap = imread_cv2(osp.join(seq_path, impath + ".exr"))
+            camera_params = np.load(osp.join(seq_path, impath + ".npz"))
 
-            impath = osp.join(self.ROOT, instance, 'blended_images', f'{view_idx:08n}_masked.jpg')
+            intrinsics = np.float32(camera_params['intrinsics'])
+            camera_pose = np.eye(4, dtype=np.float32)
+            camera_pose[:3, :3] = camera_params['R_cam2world']
+            camera_pose[:3, 3] = camera_params['t_cam2world']
 
-            # load camera params
-            input_metadata = np.load(impath.replace('jpg', 'npz'))
-            camera_pose = input_metadata['camera_pose'].astype(np.float32)
-            intrinsics = input_metadata['camera_intrinsics'].astype(np.float32)
-
-            # load image and depth
-            rgb_image = imread_cv2(impath)
-            depthmap = imread_cv2(impath.replace('blended_images', 'rendered_depth_maps').replace('_masked.jpg', '.png'), cv2.IMREAD_UNCHANGED)
-            depthmap = (depthmap.astype(np.float32) / 65535) * np.nan_to_num(input_metadata['maximum_depth'])
-
-            if mask_bg:
-                # load object mask
-                maskpath = impath.replace('blended_images', 'rendered_depth_maps').replace('_masked.jpg', '_mask.png')
-                maskmap = imread_cv2(maskpath, cv2.IMREAD_UNCHANGED).astype(np.float32)
-                maskmap = (maskmap / 255.0) > 0.1
-
-                # update the depthmap with mask
-                depthmap *= maskmap
-
-            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, depthmap, intrinsics, resolution, rng=rng, info=impath)
-
-            num_valid = (depthmap > 0.0).sum()
-            # if num_valid == 0:
-            #     # problem, invalidate image and retry
-            #     # print(f"Invalid image {impath} for {obj} {instance} {resolution} {im_idx}")
-            #     self.invalidate[obj, instance][resolution][im_idx] = True
-            #     imgs_idxs.append(im_idx)
-            #     continue
-
-            # load features
-            if self.features:
-                features = np.load(impath.replace('jpg', 'npy'))
-                points = 0
-            else:
-                features, points = 0, 0
+            image, depthmap, intrinsics = self._crop_resize_if_necessary(
+                image, depthmap, intrinsics, resolution, rng, info=(seq_path, impath))
 
             views.append(dict(
-                img=rgb_image,
+                img=image,
                 depthmap=depthmap,
-                camera_pose=camera_pose,
+                camera_pose=camera_pose,  # cam2world
                 camera_intrinsics=intrinsics,
-                dataset='Blended_MVS',
-                label=instance,
-                instance=osp.split(impath)[1],
-                img_path=impath,
-                points=points,
-                features=features,
-                index=int(im_idx)
-            ))
+                dataset='Waymo',
+                label=osp.relpath(seq_path, self.ROOT),
+                instance=impath,
+                index=int(view_index)
+))
+
         return views
+
+
+if __name__ == '__main__':
+    from dust3r.datasets.base.base_stereo_view_dataset import view_name
+    from dust3r.viz import SceneViz, auto_cam_size
+    from dust3r.utils.image import rgb
+
+    dataset = BlendedMVS(split='train', ROOT="data/blendedmvs_processed", resolution=224, aug_crop=16)
+
+    for idx in np.random.permutation(len(dataset)):
+        views = dataset[idx]
+        assert len(views) == 2
+        print(idx, view_name(views[0]), view_name(views[1]))
+        viz = SceneViz()
+        poses = [views[view_idx]['camera_pose'] for view_idx in [0, 1]]
+        cam_size = max(auto_cam_size(poses), 0.001)
+        for view_idx in [0, 1]:
+            pts3d = views[view_idx]['pts3d']
+            valid_mask = views[view_idx]['valid_mask']
+            colors = rgb(views[view_idx]['img'])
+            viz.add_pointcloud(pts3d, colors, valid_mask)
+            viz.add_camera(pose_c2w=views[view_idx]['camera_pose'],
+                           focal=views[view_idx]['camera_intrinsics'][0, 0],
+                           color=(idx * 255, (1 - idx) * 255, 0),
+                           image=colors,
+                           cam_size=cam_size)
+        viz.show()

@@ -13,6 +13,7 @@ from .megadepth import MegaDepth  # noqa: F401
 from .dtu import DTU  # noqa: F401
 from .blendedmvs import BlendedMVS  # noqa: F401
 from .scannet import Scannet  # noqa: F401
+from .arkit import ARKitScenes  # noqa: F401
 
 def get_data_loader(dataset, batch_size, num_workers=8, shuffle=True, drop_last=True, pin_mem=True):
     import torch

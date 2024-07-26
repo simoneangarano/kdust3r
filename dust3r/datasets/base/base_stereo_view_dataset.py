@@ -112,6 +112,8 @@ class BaseStereoViewDataset (EasyDataset):
 
             view['pts3d'] = pts3d
             view['valid_mask'] = valid_mask & np.isfinite(pts3d).all(axis=-1)
+            view['img_path'] = view.get('img_path', 'unknown')
+            view['index'] = view.get('index', -1)
 
             # check all datatypes
             for key, val in view.items():
